@@ -21,7 +21,7 @@ st.set_page_config(
         'Report a bug': "https://www.example.com/bug",
         'About': """
         ## BRVM Quant Backtest App
-        **Version:** 1.4 (Ajout Indicateur RSI)
+        **Version:** 1.5 (Corrections, Ajout % Investissement)
 
         Cette application permet d'analyser et de backtester des stratégies d'investissement
         sur les actions cotées à la Bourse Régionale des Valeurs Mobilières (BRVM)
@@ -200,7 +200,7 @@ def process_data(file, column_mapping, date_format=None):
                          st.info(f"{nan_before - nan_after} NaN dans '{col}' remplis par ffill/bfill.")
                      if nan_after > 0:
                           st.error(f"Attention: Il reste {nan_after} NaN dans la colonne '{col}' après ffill/bfill. Vérifiez vos données source.")
-                          # Return None or handle remaining NaNs as appropriate
+
 
         if 'Prix' in df_standardized.columns:
             if df_standardized['Prix'].isnull().all():
@@ -427,7 +427,7 @@ if not st.session_state.data.empty:
     if use_fundamental_signals: st.sidebar.info("Signaux de Valeur Intrinsèque activés.")
     else: st.sidebar.warning("Signaux de Valeur Intrinsèque désactivés (VI invalide ou <= 0).")
 
-    # --- Technique (Ajout RSI) ---
+    # --- Technique (Incluant RSI) ---
     st.sidebar.markdown("**Règles de Trading Techniques**")
 
     # MM Parameters
@@ -436,9 +436,9 @@ if not st.session_state.data.empty:
     window_long = st.sidebar.slider("Fenêtre MM Longue (j)", 20, 250, 50, key="long_ma")
     if window_court >= window_long: st.sidebar.warning("La fenêtre MM Courte doit être < à la MM Longue.")
 
-    # RSI Parameters (NEW)
+    # RSI Parameters
     st.sidebar.markdown("###### Paramètres RSI (Relative Strength Index)")
-    use_rsi = st.sidebar.checkbox("Utiliser les signaux RSI", value=True, key="use_rsi_signal") # Option to enable/disable RSI
+    use_rsi = st.sidebar.checkbox("Utiliser les signaux RSI", value=True, key="use_rsi_signal")
     if use_rsi:
         rsi_window = st.sidebar.slider("Fenêtre RSI (j)", 5, 30, 14, key="rsi_window")
         rsi_oversold = st.sidebar.slider("Seuil Survente RSI", 10, 40, 30, key="rsi_oversold")
@@ -446,10 +446,9 @@ if not st.session_state.data.empty:
         if rsi_oversold >= rsi_overbought: st.sidebar.warning("Seuil Survente >= Seuil Surachat.")
     else:
         st.sidebar.info("Signaux RSI désactivés.")
-        rsi_window = 14 # Default values even if not used
+        rsi_window = 14
         rsi_oversold = 30
         rsi_overbought = 70
-
 
     # Fundamental Margins (dependent on use_fundamental_signals)
     st.sidebar.markdown("###### Marges Fundamentales & Sorties")
@@ -467,11 +466,15 @@ if not st.session_state.data.empty:
     plafond_variation = st.sidebar.slider("Plafond variation /j (%)", 5.0, 15.0, 7.5, 0.5, key="variation_cap") / 100
     delai_livraison = st.sidebar.slider("Délai livraison (j ouvrés)", 1, 5, 3, key="settlement_days")
 
-    # --- Backtest Parameters (Pas de changement) ---
+    # --- Backtest Parameters (MODIFIÉ pour quantité) ---
     st.sidebar.subheader("5. Paramètres du Backtest")
     capital_initial = st.sidebar.number_input("Capital initial (FCFA)", 100000, 100000000, 1000000, step=100000, key="initial_capital")
     frais_transaction = st.sidebar.slider("Frais transaction (%)", 0.0, 5.0, 0.5, 0.05, key="commission_rate") / 100
     taux_sans_risque = st.sidebar.slider("Taux sans risque annuel (%)", 0.0, 10.0, 3.0, 0.1, key="risk_free_rate") / 100
+
+    # Nouveau paramètre pour la quantité à investir
+    invest_percentage = st.sidebar.slider("Investir (%) du cash dispo par trade", 10, 100, 100, 5, key="invest_percentage") / 100
+    st.sidebar.caption("Le cash investi inclut les frais.")
 
 
     # --- Calculs Techniques et Signaux ---
@@ -490,15 +493,18 @@ if not st.session_state.data.empty:
         rs = avg_gain / avg_loss
         # Handle division by zero: if avg_loss is 0, rs is inf. 100/(1+inf) is 0. RSI becomes 100.
         # Fill any potential NaNs (e.g. if both avg_gain and avg_loss are NaN initially) with 0 for the division result
-        rsi = 100 - (100 / (1 + rs)).fillna(0)
-        # The first `window` values will still be NaN from the rolling calculation itself
+        # Use .replace([np.inf, -np.inf], np.nan) before fillna to handle edge cases if division results in inf/neg_inf
+        rsi = 100 - (100 / (1 + rs.replace([np.inf, -np.inf], np.nan).fillna(0))).fillna(0) # Chained fillna/replace for safety
         return rsi
 
     # Calculate MM (Recalculé à chaque exécution)
     try:
-        if len(data) < max(window_long, rsi_window if use_rsi else 0): # Check minimum data needed for longest indicator
-             min_data_needed = max(window_long, rsi_window if use_rsi else 0)
-             st.warning(f"Pas assez données ({len(data)}j) pour MM Longue ({window_long}j) ou RSI ({rsi_window}j). Minimum requis: {min_data_needed} jours. Certains indicateurs/signaux seront NaN au début.")
+        min_data_needed = window_long
+        if use_rsi:
+             min_data_needed = max(min_data_needed, rsi_window)
+
+        if len(data) < min_data_needed:
+             st.warning(f"Pas assez données ({len(data)}j) pour certains indicateurs (MM Longue {window_long}j, RSI {rsi_window}j). Minimum requis: {min_data_needed} jours. Certains indicateurs/signaux seront NaN au début.")
              # Continue execution, NaNs will appear where data is insufficient
 
         data['MM_Court'] = data['Prix'].rolling(window=window_court, min_periods=1).mean()
@@ -511,7 +517,7 @@ if not st.session_state.data.empty:
             data['RSI'] = np.nan # Ensure column exists even if not used
 
 
-    except Exception as e: st.error(f"Erreur calcul Indicateurs (MM/RSI) : {e}"); # Ne pas st.stop() ici
+    except Exception as e: st.error(f"Erreur calcul Indicateurs (MM/RSI) : {e}");
 
 
     # Niveaux Fondamentaux (Recalculé à chaque exécution)
@@ -522,33 +528,25 @@ if not st.session_state.data.empty:
 
     # Signaux Techniques MM (Recalculé à chaque exécution)
     data['signal_technique_mm'] = 0
-    # Check if MMs were calculated and are not all NaN
     if 'MM_Court' in data.columns and 'MM_Long' in data.columns and not data[['MM_Court', 'MM_Long']].isnull().all().all():
          valid_ma = (data['MM_Court'].notna()) & (data['MM_Long'].notna())
-         # Use .shift(1) to compare with the previous day
          buy_cond_mm = valid_ma & (data['MM_Court'] > data['MM_Long']) & (data['MM_Court'].shift(1) <= data['MM_Long'].shift(1))
          sell_cond_mm = valid_ma & (data['MM_Court'] < data['MM_Long']) & (data['MM_Court'].shift(1) >= data['MM_Long'].shift(1))
          data.loc[buy_cond_mm, 'signal_technique_mm'] = 1
          data.loc[sell_cond_mm, 'signal_technique_mm'] = -1
-    # else: st.warning("Calcul des signaux MM impossible.") # Already handled by lack of plot/signals
 
 
-    # Signaux Techniques RSI (NEW - Recalculé à chaque exécution)
+    # Signaux Techniques RSI (Recalculé à chaque exécution)
     data['signal_technique_rsi'] = 0
     if use_rsi and 'RSI' in data.columns and not data['RSI'].isnull().all():
-        # Check if RSI was calculated and is not all NaN
         valid_rsi = data['RSI'].notna()
-        # Buy signal: RSI crosses above oversold threshold
         buy_cond_rsi = valid_rsi & (data['RSI'] > rsi_oversold) & (data['RSI'].shift(1) <= rsi_oversold)
-        # Sell signal: RSI crosses below overbought threshold
         sell_cond_rsi = valid_rsi & (data['RSI'] < rsi_overbought) & (data['RSI'].shift(1) >= rsi_overbought)
         data.loc[buy_cond_rsi, 'signal_technique_rsi'] = 1
         data.loc[sell_cond_rsi, 'signal_technique_rsi'] = -1
-    # else: st.warning("Calcul des signaux RSI impossible ou désactivé.") # Already handled by lack of plot/signals
 
 
     # Signaux Combinés Achat/Vente (LOGIQUE MODIFIÉE POUR INCLURE RSI)
-    # Base technique signal: MM OR RSI (if RSI is used)
     cond_achat_tech = (data['signal_technique_mm'] == 1)
     cond_vente_tech = (data['signal_technique_mm'] == -1)
 
@@ -556,62 +554,61 @@ if not st.session_state.data.empty:
         cond_achat_tech = cond_achat_tech | (data['signal_technique_rsi'] == 1)
         cond_vente_tech = cond_vente_tech | (data['signal_technique_rsi'] == -1)
 
-    # Combine Technical and Fundamental (if fundamental is used)
     if use_fundamental_signals:
         if 'prix_achat_fondamental' in data.columns and 'prix_vente_fondamental' in data.columns and \
            not data[['prix_achat_fondamental', 'prix_vente_fondamental']].isnull().all().all():
 
-            # Fundamental conditions (ensure notna before comparison)
             cond_achat_fond = (data['Prix'] < data['prix_achat_fondamental']) & data['prix_achat_fondamental'].notna()
             cond_vente_fond = (data['Prix'] > data['prix_vente_fondamental']) & data['prix_vente_fondamental'].notna()
 
-            # Final combined signals
-            data['achat'] = cond_achat_tech & cond_achat_fond # Technical AND Fundamental for Buy
-            data['vente_signal'] = cond_vente_tech | cond_vente_fond # Technical OR Fundamental for Sell
+            data['achat'] = cond_achat_tech & cond_achat_fond
+            data['vente_signal'] = cond_vente_tech | cond_vente_fond
         else:
              st.warning("Signaux fondamentaux désactivés car les seuils calculés sont invalides (NaN).")
-             data['achat'] = cond_achat_tech # Fallback to technical only
-             data['vente_signal'] = cond_vente_tech # Fallback to technical only
-             use_fundamental_signals = False # Ensure flag is consistent
+             data['achat'] = cond_achat_tech
+             data['vente_signal'] = cond_vente_tech
+             use_fundamental_signals = False
     else:
-        data['achat'] = cond_achat_tech # Technical signals only
-        data['vente_signal'] = cond_vente_tech # Technical signals only
+        data['achat'] = cond_achat_tech
+        data['vente_signal'] = cond_vente_tech
 
 
-    # Graphique Indicateurs Techniques (MODIFIÉ pour inclure RSI)
+    # Graphique Indicateurs Techniques (CORRIGÉ l'erreur de slicing pour le plot)
     st.subheader("Analyse Technique - Indicateurs")
     try:
         fig_tech, ax_tech = plt.subplots(figsize=(12, 8), nrows=2, sharex=True, gridspec_kw={'height_ratios': [3, 1]})
-        ax_price, ax_rsi = ax_tech # Renommer les axes pour plus de clarté
+        ax_price, ax_rsi = ax_tech
 
-        # Price and MM Plot
+        # Price and MM Plot - CORRECTION ici, tracer la série dropna directement
         ax_price.plot(data.index, data['Prix'], label='Prix', lw=1, alpha=0.8, zorder=2)
         if 'MM_Court' in data.columns and not data['MM_Court'].isnull().all():
-             ax_price.plot(data.index[data['MM_Court'].first_valid_index():], data['MM_Court'].dropna(), label=f'MM {window_court}j', lw=1.5, zorder=3)
+             # data['MM_Court'].dropna() fournit les valeurs et l'index correspondant sans NaN initiaux
+             ax_price.plot(data['MM_Court'].dropna().index, data['MM_Court'].dropna(), label=f'MM {window_court}j', lw=1.5, zorder=3)
         if 'MM_Long' in data.columns and not data['MM_Long'].isnull().all():
-             ax_price.plot(data.index[data['MM_Long'].first_valid_index():], data['MM_Long'].dropna(), label=f'MM {window_long}j', lw=1.5, zorder=3)
+             # CORRECTION similaire pour MM Longue
+             ax_price.plot(data['MM_Long'].dropna().index, data['MM_Long'].dropna(), label=f'MM {window_long}j', lw=1.5, zorder=3)
 
         ax_price.set_title('Prix & Moyennes Mobiles'); ax_price.set_ylabel('Prix (FCFA)')
         ax_price.grid(True, linestyle='--', alpha=0.6, zorder=1); ax_price.legend(loc='upper left')
         ax_price.get_yaxis().set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
 
 
-        # RSI Plot (NEW)
+        # RSI Plot - CORRECTION ici si le RSI a aussi des NaNs au début
         if use_rsi and 'RSI' in data.columns and not data['RSI'].isnull().all():
-            ax_rsi.plot(data.index, data['RSI'], label=f'RSI ({rsi_window}j)', lw=1.5, color='purple')
+            # CORRECTION similaire pour RSI
+            ax_rsi.plot(data['RSI'].dropna().index, data['RSI'].dropna(), label=f'RSI ({rsi_window}j)', lw=1.5, color='purple')
             ax_rsi.axhline(rsi_overbought, color='red', linestyle='--', lw=1, alpha=0.7, label=f'Surachat ({rsi_overbought})')
             ax_rsi.axhline(rsi_oversold, color='green', linestyle='--', lw=1, alpha=0.7, label=f'Survente ({rsi_oversold})')
             ax_rsi.axhline(50, color='grey', linestyle=':', lw=1, alpha=0.5, label='50')
             ax_rsi.set_title('Indicateur RSI'); ax_rsi.set_ylabel('RSI')
-            ax_rsi.set_ylim(0, 100) # RSI is always between 0 and 100
+            ax_rsi.set_ylim(0, 100)
             ax_rsi.grid(True, linestyle='--', alpha=0.6); ax_rsi.legend(loc='upper left')
         else:
              ax_rsi.set_title('Indicateur RSI (Désactivé ou Indisponible)'); ax_rsi.set_ylabel('RSI')
              ax_rsi.text(0.5, 0.5, "RSI désactivé ou calcul impossible", horizontalalignment='center', verticalalignment='center', transform=ax_rsi.transAxes, color='grey')
 
 
-        # Date Formatting for lower plot (shared x-axis)
-        ax_rsi.set_xlabel('Date') # Only the bottom plot needs xlabel
+        ax_rsi.set_xlabel('Date')
         ax_rsi.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d'))
         ax_rsi.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=5, maxticks=10))
         fig_tech.autofmt_xdate()
@@ -619,20 +616,19 @@ if not st.session_state.data.empty:
     except Exception as e: st.error(f"Erreur génération graphique indicateurs : {e}"); st.error(traceback.format_exc())
 
 
-    # Graphique Signaux (MODIFIÉ pour refléter la combinaison MM/RSI)
+    # Graphique Signaux (Pas de changement)
     try:
         fig3, ax3 = plt.subplots(figsize=(12, 6))
         ax3.plot(data.index, data['Prix'], label='Prix', lw=1.5, zorder=2)
 
         if use_fundamental_signals and val_intrinseque is not None and val_intrinseque > 0:
             ax3.axhline(y=val_intrinseque, color='grey', ls='-', alpha=0.7, label=f'VI ({val_intrinseque:,.0f})', zorder=1)
-            if pd.notna(data['prix_achat_fondamental'].iloc[0]): ax3.axhline(y=data['prix_achat_fondamental'].iloc[0], color='green', ls='--', alpha=0.6, label=f'Seuil Achat VI ({data["prix_achat_fondamental"].iloc[0]:,.0f})', zorder=1)
-            if pd.notna(data['prix_vente_fondamental'].iloc[0]): ax3.axhline(y=data['prix_vente_fondamental'].iloc[0], color='red', ls='--', alpha=0.6, label=f'Seuil Vente VI ({data["prix_vente_fondamental"].iloc[0]:,.0f})', zorder=1)
+            if 'prix_achat_fondamental' in data.columns and pd.notna(data['prix_achat_fondamental'].iloc[0]): ax3.axhline(y=data['prix_achat_fondamental'].iloc[0], color='green', ls='--', alpha=0.6, label=f'Seuil Achat VI ({data["prix_achat_fondamental"].iloc[0]:,.0f})', zorder=1)
+            if 'prix_vente_fondamental' in data.columns and pd.notna(data['prix_vente_fondamental'].iloc[0]): ax3.axhline(y=data['prix_vente_fondamental'].iloc[0], color='red', ls='--', alpha=0.6, label=f'Seuil Vente VI ({data["prix_vente_fondamental"].iloc[0]:,.0f})', zorder=1)
 
 
-        # Plot points where the *combined* strategy signals trigger
-        achats_sig = data[data['achat'] & data['Prix'].notna()] # Ensure price is not NaN
-        ventes_sig = data[data['vente_signal'] & data['Prix'].notna()] # Ensure price is not NaN
+        achats_sig = data[data['achat'] & data['Prix'].notna()]
+        ventes_sig = data[data['vente_signal'] & data['Prix'].notna()]
 
         if not achats_sig.empty: ax3.scatter(achats_sig.index, achats_sig['Prix'], color='lime', edgecolor='green', s=70, marker='^', label='Signal Achat Strat', zorder=5)
         if not ventes_sig.empty: ax3.scatter(ventes_sig.index, ventes_sig['Prix'], color='tomato', edgecolor='red', s=70, marker='v', label='Signal Vente Strat', zorder=5)
@@ -647,9 +643,11 @@ if not st.session_state.data.empty:
     # --- Backtest ---
     st.subheader("🚀 Backtest de la Stratégie")
     st.markdown(f"Capital: **{capital_initial:,.0f} FCFA**, Frais: **{frais_transaction*100:.2f}%**, Plafond: **{plafond_variation*100:.1f}%**, Livraison: **{delai_livraison}j**.")
+    st.markdown(f"Investissement par trade : **{invest_percentage*100:.0f}%** du cash disponible.") # Afficher le nouveau paramètre
 
-    # Fonction Backtest (Pas de changement dans la fonction elle-même, elle utilise les colonnes 'achat'/'vente_signal' qui sont déjà calculées avec la nouvelle logique)
-    def run_backtest(data_for_backtest, capital_initial, frais_transaction, stop_loss, take_profit, plafond_variation, delai_livraison):
+
+    # Fonction Backtest (MODIFIÉE pour la quantité et la gestion du cash insuffisant)
+    def run_backtest(data_for_backtest, capital_initial, frais_transaction, stop_loss, take_profit, plafond_variation, delai_livraison, invest_percentage):
          if data_for_backtest.empty or not isinstance(data_for_backtest.index, pd.DatetimeIndex):
               st.error("Données invalides pour le backtest."); return pd.DataFrame(), [], [], pd.DataFrame()
 
@@ -749,31 +747,50 @@ if not st.session_state.data.empty:
              # --- Conditions d'Achat ---
              # row['achat'] inclut maintenant la logique MM et/ou RSI et/ou Funda
              if not trade_en_cours_boucle and row['achat'] and cash_disponible > 0:
-                  nb_actions_a_acheter = np.floor(cash_disponible / prix_effectif_jour)
+                 # MODIFICATION ICI : Calcul de la quantité en incluant les frais dès le départ
+                 # et en utilisant le pourcentage d'investissement du cash disponible
+                 amount_to_spend = cash_disponible * invest_percentage
+                 cost_per_share_with_fees = prix_effectif_jour * (1 + frais_transaction)
 
-                  if nb_actions_a_acheter >= 1:
-                      montant_achat = nb_actions_a_acheter * prix_effectif_jour
-                      frais = montant_achat * frais_transaction
-                      if (montant_achat + frais) <= cash_disponible:
-                          cash_disponible -= (montant_achat + frais)
-                          prix_achat_moyen_actif = prix_effectif_jour
-                          nb_actions_possedees += nb_actions_a_acheter
+                 if cost_per_share_with_fees > 0: # Éviter la division par zéro
+                     # Calculer le nombre maximal d'actions entières achetable avec le montant alloué
+                     nb_actions_a_acheter = np.floor(amount_to_spend / cost_per_share_with_fees)
+                 else:
+                     nb_actions_a_acheter = 0 # Ne peut rien acheter si le coût est nul ou négatif
 
-                          transactions.append({
-                              'Date': jour, 'Type': 'Achat', 'Quantité': nb_actions_a_acheter,
-                              'Prix_Unitaire': prix_effectif_jour, 'Montant': montant_achat,
-                              'Frais': frais, 'Cash_Net': -(montant_achat + frais),
-                              'Raison': 'Signal Stratégie', 'Prix_Achat_Moyen': prix_achat_moyen_actif
-                          })
-                          achats_dates.append(jour)
+                 if nb_actions_a_acheter >= 1: # S'assurer qu'on peut acheter au moins une action
+                     montant_achat = nb_actions_a_acheter * prix_effectif_jour
+                     frais = montant_achat * frais_transaction # Recalculer frais précis pour l'enregistrement
+                     total_cost = montant_achat + frais
 
-                          trade_en_cours_boucle = True
-                          date_livraison_boucle = jour + BDay(delai_livraison)
-                          stop_loss_actif = prix_effectif_jour * (1 - stop_loss)
-                          take_profit_actif = prix_effectif_jour * (1 + take_profit)
+                     # Cette vérification devrait maintenant toujours passer si nb_actions_a_acheter >= 1,
+                     # grâce à la nouvelle formule de calcul.
+                     if total_cost <= cash_disponible:
+                         cash_disponible -= total_cost
+                         prix_achat_moyen_actif = prix_effectif_jour
+                         nb_actions_possedees += nb_actions_a_acheter
 
-                      else:
-                          st.warning(f"{jour.date()}: Pas assez de cash pour acheter {nb_actions_a_acheter:,.0f} actions ({montant_achat + frais:,.2f} FCFA nécessaires). Cash: {cash_disponible:,.2f}.")
+                         transactions.append({
+                             'Date': jour, 'Type': 'Achat', 'Quantité': nb_actions_a_acheter,
+                             'Prix_Unitaire': prix_effectif_jour, 'Montant': montant_achat,
+                             'Frais': frais, 'Cash_Net': -total_cost,
+                             'Raison': 'Signal Stratégie', 'Prix_Achat_Moyen': prix_achat_moyen_actif
+                         })
+                         achats_dates.append(jour)
+
+                         trade_en_cours_boucle = True
+                         date_livraison_boucle = jour + BDay(delai_livraison)
+                         stop_loss_actif = prix_effectif_jour * (1 - stop_loss)
+                         take_profit_actif = prix_effectif_jour * (1 + take_profit)
+
+                     else:
+                          # Ce cas devient très rare avec la nouvelle formule, peut-être dû à des
+                          # légers problèmes de précision flottante ou si amount_to_spend était > cash_disponible
+                          st.warning(f"{jour.date()}: Logique achat inattendue - Coût total ({total_cost:,.2f}) > Cash ({cash_disponible:,.2f}) après calcul de quantité ({nb_actions_a_acheter}).")
+                 else:
+                      # Ce warning est normal si le cash alloué ne permet pas d'acheter une action entière
+                      st.info(f"{jour.date()}: Pas assez de cash ({cash_disponible*invest_percentage:,.2f} alloué) pour acheter au moins une action au prix {prix_effectif_jour:,.2f} (incluant frais).")
+
 
              # --- Fin de Journée ---
              portfolio.loc[jour, 'actions'] = nb_actions_possedees
@@ -790,11 +807,14 @@ if not st.session_state.data.empty:
          # Simulation de la vente finale si position ouverte
          if nb_actions_possedees > 0:
              dernier_jour = data_for_backtest.index[-1]
+             # Utiliser le dernier prix effectif enregistré dans le portefeuille
              prix_dernier_jour = portfolio.loc[dernier_jour, 'prix_effectif']
              montant_vente = nb_actions_possedees * prix_dernier_jour
              frais = montant_vente * frais_transaction
              cash_obtenu = montant_vente - frais
+             # Ajouter le cash de la vente au cash *existant* le dernier jour dans le portefeuille
              cash_disponible_final = portfolio.loc[dernier_jour, 'cash'] + cash_obtenu
+
 
              transactions.append({
                  'Date': dernier_jour, 'Type': 'Vente Fin', 'Quantité': nb_actions_possedees,
@@ -812,6 +832,8 @@ if not st.session_state.data.empty:
              portfolio.loc[dernier_jour, 'prix_achat_moyen'] = 0.0
              portfolio.loc[dernier_jour, 'stop_loss_price'] = np.nan
              portfolio.loc[dernier_jour, 'take_profit_price'] = np.nan
+
+             # Recalculer le rendement pour la dernière journée après liquidation simulée
              if len(data_for_backtest) > 1:
                 portfolio.loc[dernier_jour, 'rendement'] = (portfolio.loc[dernier_jour, 'valeur_totale'] - portfolio.loc[data_for_backtest.index[-2], 'valeur_totale']) / portfolio.loc[data_for_backtest.index[-2], 'valeur_totale']
              else:
@@ -834,7 +856,8 @@ if not st.session_state.data.empty:
             stop_loss,
             take_profit,
             plafond_variation,
-            delai_livraison
+            delai_livraison,
+            invest_percentage # Passer le nouveau paramètre
         )
 
         if not portfolio_df.empty:
