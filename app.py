@@ -152,10 +152,12 @@ def process_data(file):
         st.error(f"Erreur lors du traitement des données: {e}")
         return None
 
-# Fonction pour télécharger un rapport PDF
-def create_download_link(val, filename):
-    b64 = base64.b64encode(val)
-    return f'<a href="data:application/octet-stream;base64,{b64.decode()}" download="{filename}.csv">Télécharger le rapport (CSV)</a>'
+# Fonction pour créer un lien de téléchargement pour le rapport
+def get_csv_download_link(df, filename="rapport_backtest.csv"):
+    csv = df.to_csv(index=True)
+    b64 = base64.b64encode(csv.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">Télécharger le rapport (CSV)</a>'
+    return href
 
 # Si un fichier est uploadé, traiter les données
 if uploaded_file is not None:
@@ -553,4 +555,8 @@ if uploaded_file is not None:
         fig7, ax7 = plt.subplots(figsize=(12, 6))
         # Créer un indice de performance pour la stratégie et le buy & hold
         perf_strategie = (1 + portfolio['rendement_cumule'])
-        perf_buy_hold = data['Prix'] / data['Prix
+        perf_buy_hold = data['Prix'] / data['Prix'].iloc[0]
+        
+        ax7.plot(data.index, perf_strategie, label='Stratégie', linewidth=2)
+        ax7.plot(data.index, perf_buy_hold, label='Buy & Hold', linewidth=2, linestyle='--')
+        ax7.set_title('
