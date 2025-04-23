@@ -21,7 +21,7 @@ st.set_page_config(
         'Report a bug': "https://www.example.com/bug",
         'About': """
         ## BRVM Quant Backtest App
-        **Version:** 1.6.3 (Correction SyntaxError Indentation)
+        **Version:** 1.6.4 (Correction Indentation + Clés Session State)
 
         Cette application permet d'analyser et de backtester des stratégies d'investissement
         sur les actions cotées à la Bourse Régionale des Valeurs Mobilières (BRVM)
@@ -408,6 +408,7 @@ if not st.session_state.data.empty:
 
     # --- Fondamental ---
     st.sidebar.markdown("**Analyse Fondamentale (Modèle Gordon-Shapiro)**")
+    # Added session_state keys here
     dividende_annuel = st.sidebar.number_input("Dernier dividende annuel (FCFA)", min_value=0.0, value=st.session_state.get("dividend", 600.0), step=10.0, key="dividend")
     taux_croissance = st.sidebar.slider("Croissance annuelle dividende (%)", -10.0, 15.0, st.session_state.get("growth_rate", 3.0), 0.5, key="growth_rate") / 100
     rendement_exige = st.sidebar.slider("Taux d'actualisation (%)", 5.0, 30.0, st.session_state.get("discount_rate", 12.0), 0.5, key="discount_rate") / 100
@@ -485,16 +486,6 @@ if not st.session_state.data.empty:
     )
 
     # Display warnings if selected method requires disabled indicator
-    method_indicators = {
-        "MM Seulement": "MM Crossover", "RSI Seulement": "RSI Crossover", "MACD Seulement": "MACD Crossover",
-        "MM OU RSI": "MM Crossover ou RSI Crossover", "MM ET RSI": "MM Crossover et RSI Crossover",
-        "MM OU MACD": "MM Crossover ou MACD Crossover", "MM ET MACD": "MM Crossover et MACD Crossover",
-        "RSI OU MACD": "RSI Crossover ou MACD Crossover", "RSI ET MACD": "RSI Crossover et MACD Crossover",
-        "MM OU RSI OU MACD": "MM Crossover ou RSI Crossover ou MACD Crossover",
-        "MM ET RSI ET MACD": "MM Crossover et RSI Crossover et MACD Crossover"
-    }
-
-    # Check if required indicators for the selected method are active
     method_requires_mm = "MM" in technical_signal_method
     method_requires_rsi = "RSI" in technical_signal_method
     method_requires_macd = "MACD" in technical_signal_method
@@ -551,8 +542,8 @@ if not st.session_state.data.empty:
     st.sidebar.subheader("5. Paramètres du Backtest")
     capital_initial = st.sidebar.number_input("Capital initial (FCFA)", 100000, 100000000, st.session_state.get("initial_capital", 1000000), step=100000, key="initial_capital")
     frais_transaction = st.sidebar.slider("Frais transaction (%)", 0.0, 5.0, st.session_state.get("commission_rate", 0.5), 0.05, key="commission_rate") / 100
-    taux_sans_risque = st.sidebar.slider("Taux sans risque annuel (%)", 0.0, 10.0, st.session_state.get("risk_free_rate", 3.0), 0.1, key="risk_risk_free_rate") / 100 # <-- Typo corrected here
-    # Note: Key was risk_free_rate, changed to risk_risk_free_rate by mistake in previous version? Let's ensure consistency. Key should probably be risk_free_rate.
+    # Corrected key here (was risk_risk_free_rate)
+    taux_sans_risque = st.sidebar.slider("Taux sans risque annuel (%)", 0.0, 10.0, st.session_state.get("risk_free_rate", 3.0), 0.1, key="risk_free_rate") / 100
 
     invest_percentage = st.sidebar.slider("Investir (%) du cash dispo par trade", 10, 100, st.session_state.get("invest_percentage", 100), 5, key="invest_percentage") / 100
     st.sidebar.caption("Le cash investi inclut les frais.")
@@ -581,14 +572,9 @@ if not st.session_state.data.empty:
              return pd.Series(np.nan, index=df.index), pd.Series(np.nan, index=df.index), pd.Series(np.nan, index=df.index)
 
         # Ensure sufficient data for initial EMA calculation
-        # min_periods is automatically handled by ewm but depends on adjust=False/True.
-        # With adjust=False, the first value is the price itself, subsequent are weighted.
-        # The signal line needs enough MACD points, which in turn need enough price points.
-        # A common rule of thumb is fast_window + slow_window + signal_window - 2, or max(fast,slow) + signal -1.
-        # Let's just check against max(fast, slow, signal) and add a warning.
         min_data_for_calculation = max(fast_window, slow_window, signal_window)
         if len(price_series) < min_data_for_calculation:
-             st.warning(f"Peut-être pas assez de données ({len(price_series)}j) pour calculer un MACD valide (min {min_data_for_calculation} jours recommandés pour des premières valeurs stables). Les premières valeurs seront NaN.")
+             st.warning(f"Peut-être pas assez de données ({len(price_series)}j) pour calculer un MACD valide (min {min_data_for_calculation} jours recommandés pour des premières valeurs stables). Les valeurs seront NaN.")
              # Continue calculation, NaN handling will manage where results are valid
 
         fast_ema = price_series.ewm(span=fast_window, adjust=False).mean()
@@ -682,7 +668,7 @@ if not st.session_state.data.empty:
         data.loc[sell_cond_macd, 'signal_technique_macd'] = -1
 
 
-    # Signaux Techniques Combinés selon la méthode sélectionnée (LOGIQUE CORRIGÉE + INDENTATION)
+    # Signaux Techniques Combinés selon la méthode sélectionnée (LOGIQUE CORRIGÉE + INDENTATION VÉRIFIÉE)
     # Initialiser à False. Si tech_signal_method_active est False, ils restent False.
     cond_achat_tech_base = pd.Series(False, index=data.index)
     cond_vente_tech_base = pd.Series(False, index=data.index)
@@ -698,12 +684,11 @@ if not st.session_state.data.empty:
         macd_sell_sig = (data['signal_technique_macd'] == -1)
 
         # Apply the selected combination logic directly
-        # Ensure correct indentation for all elif blocks
+        # Ensure correct indentation for all elif blocks below this point
         if technical_signal_method == "MM OU RSI OU MACD":
             cond_achat_tech_base = mm_buy_sig | rsi_buy_sig | macd_buy_sig
             cond_vente_tech_base = mm_sell_sig | rsi_sell_sig | macd_sell_sig
         elif technical_signal_method == "MM ET RSI ET MACD":
-            # Corrected typo in sell condition
             cond_achat_tech_base = mm_buy_sig & rsi_buy_sig & macd_buy_sig
             cond_vente_tech_base = mm_sell_sig & rsi_sell_sig & macd_sell_sig
         elif technical_signal_method == "MM Seulement":
@@ -733,7 +718,6 @@ if not st.session_state.data.empty:
         elif technical_signal_method == "RSI ET MACD":
             cond_achat_tech_base = rsi_buy_sig & macd_buy_sig
             cond_vente_tech_base = rsi_sell_sig & macd_sell_sig
-        # Note: Warnings for disabled indicators are handled by the check before this block.
         # The resulting cond_achat/vente_tech_base will be False everywhere if a required indicator
         # for the chosen method is not active, because the individual signals will be False.
 
@@ -815,7 +799,7 @@ if not st.session_state.data.empty:
                  ax_rsi.grid(True, linestyle='--', alpha=0.6); ax_rsi.legend(loc='upper left')
              else:
                   ax_rsi.set_title('Indicateur RSI (Désactivé ou Indisponible)'); ax_rsi.set_ylabel('RSI')
-                  ax_rsi.text(0.5, 0.5, "RSI désactivé ou calcul impossible", horizontalalignment='center', verticalalignment='center', transform=rsi_ax.transAxes, color='grey')
+                  ax_rsi.text(0.5, 0.5, "RSI désactivé ou calcul impossible", horizontalalignment='center', verticalalignment='center', transform=ax_rsi.transAxes, color='grey')
 
 
         # MACD Plot (NEW) - Use dropna().index
@@ -851,7 +835,9 @@ if not st.session_state.data.empty:
 
         if use_fundamental_signals and val_intrinseque is not None and val_intrinseque > 0:
             ax3.axhline(y=val_intrinseque, color='grey', ls='-', alpha=0.7, label=f'VI ({val_intrinseque:,.0f})', zorder=1)
+            # Check if column exists and is not NaN before plotting line
             if 'prix_achat_fondamental' in data.columns and pd.notna(data['prix_achat_fondamental'].iloc[0]): ax3.axhline(y=data['prix_achat_fondamental'].iloc[0], color='green', ls='--', alpha=0.6, label=f'Seuil Achat VI ({data["prix_achat_fondamental"].iloc[0]:,.0f})', zorder=1)
+            # Check if column exists and is not NaN before plotting line
             if 'prix_vente_fondamental' in data.columns and pd.notna(data['prix_vente_fondamental'].iloc[0]): ax3.axhline(y=data['prix_vente_fondamental'].iloc[0], color='red', ls='--', alpha=0.6, label=f'Seuil Vente VI ({data["prix_vente_fondamental"].iloc[0]:,.0f})', zorder=1)
 
         # Plot Trailing Stop Loss level if enabled and available
