@@ -30,57 +30,122 @@ def process_data(file):
     try:
         # Tenter de lire le fichier avec différents séparateurs
         try:
-            df = pd.read_csv(file, parse_dates=['Date'])
-        except:
+            # Essayer de lire les premières lignes pour déterminer le format
+            sample = file.read(1024)
+            file.seek(0)  # Revenir au début du fichier
+            
+            # Détecter le séparateur
+            if b'\t' in sample:
+                separator = '\t'
+            elif b';' in sample:
+                separator = ';'
+            else:
+                separator = ','
+                
+            # Lire le CSV avec le séparateur identifié
+            df = pd.read_csv(file, sep=separator)
+            
+            # Vérifier si la première colonne est numérique (parfois un index)
+            if df.columns[0].isdigit() or df.iloc[0, 0].isdigit():
+                file.seek(0)
+                df = pd.read_csv(file, sep=separator, index_col=0)
+                
+        except Exception as e:
+            st.error(f"Erreur lors de la lecture initiale: {e}")
             try:
-                df = pd.read_csv(file, sep=';', parse_dates=['Date'])
+                file.seek(0)
+                df = pd.read_csv(file)
             except:
-                df = pd.read_csv(file, sep='\t', parse_dates=['Date'])
+                file.seek(0)
+                df = pd.read_csv(file, sep=None, engine='python')  # Détection automatique du séparateur
         
-        # Vérifier que les colonnes nécessaires sont présentes
-        required_columns = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
-        missing_columns = [col for col in required_columns if col not in df.columns]
+        # Afficher les colonnes détectées pour le débogage
+        st.write("Colonnes détectées:", list(df.columns))
+        
+        # Identifier les colonnes nécessaires peu importe la casse
+        columns_lower = [col.lower() for col in df.columns]
+        
+        date_col = None
+        open_col = None
+        high_col = None
+        low_col = None
+        close_col = None
+        volume_col = None
+        
+        for i, col_name in enumerate(columns_lower):
+            if 'date' in col_name:
+                date_col = df.columns[i]
+            elif 'open' in col_name:
+                open_col = df.columns[i]
+            elif 'high' in col_name:
+                high_col = df.columns[i]
+            elif 'low' in col_name:
+                low_col = df.columns[i]
+            elif 'close' in col_name:
+                close_col = df.columns[i]
+            elif 'vol' in col_name:
+                volume_col = df.columns[i]
+        
+        # Si les colonnes n'ont pas été trouvées par nom, essayer par position
+        if date_col is None and len(df.columns) >= 1:
+            date_col = df.columns[0]
+        if open_col is None and len(df.columns) >= 2:
+            open_col = df.columns[1]
+        if high_col is None and len(df.columns) >= 3:
+            high_col = df.columns[2]
+        if low_col is None and len(df.columns) >= 4:
+            low_col = df.columns[3]
+        if close_col is None and len(df.columns) >= 5:
+            close_col = df.columns[4]
+        if volume_col is None and len(df.columns) >= 6:
+            volume_col = df.columns[5]
+        
+        missing_columns = []
+        if date_col is None:
+            missing_columns.append("Date")
+        if open_col is None:
+            missing_columns.append("Open")
+        if high_col is None:
+            missing_columns.append("High")
+        if low_col is None:
+            missing_columns.append("Low")
+        if close_col is None:
+            missing_columns.append("Close")
+        if volume_col is None:
+            missing_columns.append("Volume")
         
         if missing_columns:
-            st.error(f"Colonnes manquantes: {', '.join(missing_columns)}. Assurez-vous que votre CSV contient: Date, Open, High, Low, Close, Volume")
+            st.error(f"Colonnes manquantes: {', '.join(missing_columns)}. Assurez-vous que votre CSV contient ces informations.")
+            # Afficher les premières lignes pour aider à diagnostiquer
+            st.write("Aperçu des données:", df.head())
             return None
         
-        # S'assurer que la date est au format datetime
-        if not pd.api.types.is_datetime64_dtype(df['Date']):
-            df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+        # Créer un nouveau DataFrame avec les colonnes standardisées
+        df_standardized = pd.DataFrame()
+        df_standardized['Date'] = pd.to_datetime(df[date_col], errors='coerce')
+        df_standardized['Ouverture'] = pd.to_numeric(df[open_col], errors='coerce')
+        df_standardized['Plus_Haut'] = pd.to_numeric(df[high_col], errors='coerce')
+        df_standardized['Plus_Bas'] = pd.to_numeric(df[low_col], errors='coerce')
+        df_standardized['Prix'] = pd.to_numeric(df[close_col], errors='coerce')
+        df_standardized['Volume'] = pd.to_numeric(df[volume_col], errors='coerce')
         
         # Supprimer les lignes avec des dates manquantes
-        df = df.dropna(subset=['Date'])
+        df_standardized = df_standardized.dropna(subset=['Date'])
         
         # Trier par date (du plus ancien au plus récent)
-        df = df.sort_values('Date')
-        
-        # Renommer les colonnes pour correspondre à notre application
-        df = df.rename(columns={
-            'Date': 'Date',
-            'Open': 'Ouverture',
-            'High': 'Plus_Haut',
-            'Low': 'Plus_Bas',
-            'Close': 'Prix',
-            'Volume': 'Volume'
-        })
+        df_standardized = df_standardized.sort_values('Date')
         
         # Définir la date comme index
-        df = df.set_index('Date')
-        
-        # Convertir les colonnes numériques
-        for col in ['Prix', 'Ouverture', 'Plus_Bas', 'Plus_Haut', 'Volume']:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col].astype(str).str.replace('%', '').str.replace(',', ''), errors='coerce')
+        df_standardized = df_standardized.set_index('Date')
         
         # Ajouter la colonne Variation
-        df['Variation'] = df['Prix'].diff()
-        df['Variation_%'] = df['Prix'].pct_change() * 100
+        df_standardized['Variation'] = df_standardized['Prix'].diff()
+        df_standardized['Variation_%'] = df_standardized['Prix'].pct_change() * 100
         
         # Remplir les valeurs NaN
-        df = df.fillna(method='ffill')
+        df_standardized = df_standardized.fillna(method='ffill')
         
-        return df
+        return df_standardized
     
     except Exception as e:
         st.error(f"Erreur lors du traitement des données: {e}")
