@@ -3,8 +3,9 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from datetime import datetime
+from datetime import datetime, timedelta
 import io
+import base64
 
 # Configuration de la page Streamlit
 st.set_page_config(
@@ -151,6 +152,11 @@ def process_data(file):
         st.error(f"Erreur lors du traitement des données: {e}")
         return None
 
+# Fonction pour télécharger un rapport PDF
+def create_download_link(val, filename):
+    b64 = base64.b64encode(val)
+    return f'<a href="data:application/octet-stream;base64,{b64.decode()}" download="{filename}.csv">Télécharger le rapport (CSV)</a>'
+
 # Si un fichier est uploadé, traiter les données
 if uploaded_file is not None:
     # Demander le titre de l'action
@@ -173,7 +179,7 @@ if uploaded_file is not None:
         ax.plot(data.index, data['Prix'], linewidth=2)
         ax.set_title(f'Évolution du cours de {stock_name}')
         ax.set_xlabel('Date')
-        ax.set_ylabel('Prix (XOF)')
+        ax.set_ylabel('Prix (FCFA)')
         ax.grid(True, alpha=0.3)
         
         # Amélioration du format des dates sur l'axe X
@@ -193,7 +199,8 @@ if uploaded_file is not None:
             st.markdown("### Analyse fondamentale")
             rendement_exige = st.slider("Taux d'actualisation (%)", 5, 20, 12) / 100
             taux_croissance = st.slider("Croissance annuelle dividende (%)", 0, 10, 3) / 100
-            dividende_annuel = st.number_input("Dernier dividende annuel (XOF)", 200, 1000, 600)
+            # Retrait de la limitation à 1000 FCFA
+            dividende_annuel = st.number_input("Dernier dividende annuel (FCFA)", min_value=0, value=600)
         
         with col2:
             # Paramètres techniques
@@ -201,6 +208,16 @@ if uploaded_file is not None:
             marge_achat = st.slider("Marge de sécurité à l'achat (%)", 0, 50, 20) / 100
             marge_vente = st.slider("Prime de sortie (%)", 0, 50, 10) / 100
             stop_loss = st.slider("Stop Loss (%)", 1, 20, 10) / 100
+        
+        # Paramètres spécifiques à la BRVM
+        st.subheader("Paramètres spécifiques à la BRVM")
+        col1, col2 = st.columns(2)
+        with col1:
+            # Plafond de variation journalière
+            plafond_variation = st.slider("Plafond de variation journalière (%)", 5, 15, 10) / 100
+        with col2:
+            # Délai de livraison
+            delai_livraison = st.slider("Délai de livraison (jours ouvrés)", 1, 5, 3)
         
         # Calcul des moyennes mobiles
         st.subheader("Analyse technique")
@@ -218,7 +235,7 @@ if uploaded_file is not None:
         ax2.plot(data.index, data['MM_Long'], label=f'MM {window_long} jours', linewidth=1.5)
         ax2.set_title('Analyse technique - Moyennes Mobiles')
         ax2.set_xlabel('Date')
-        ax2.set_ylabel('Prix (XOF)')
+        ax2.set_ylabel('Prix (FCFA)')
         ax2.grid(True, alpha=0.3)
         ax2.legend()
         ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
@@ -230,7 +247,7 @@ if uploaded_file is not None:
         # Calcul de la valeur intrinsèque avec le modèle de Gordon
         D1 = dividende_annuel * (1 + taux_croissance)
         val_intrinseque = D1 / (rendement_exige - taux_croissance)
-        st.markdown(f"### Valeur intrinsèque calculée: **{val_intrinseque:.2f} XOF**")
+        st.markdown(f"### Valeur intrinsèque calculée: **{val_intrinseque:.2f} FCFA**")
         
         # Calcul des signaux d'achat/vente
         data['val_intrinseque'] = val_intrinseque
@@ -265,7 +282,7 @@ if uploaded_file is not None:
         
         ax3.set_title('Signaux d\'achat et de vente')
         ax3.set_xlabel('Date')
-        ax3.set_ylabel('Prix (XOF)')
+        ax3.set_ylabel('Prix (FCFA)')
         ax3.grid(True, alpha=0.3)
         ax3.legend()
         ax3.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
@@ -277,11 +294,11 @@ if uploaded_file is not None:
         # Backtest
         st.subheader("Backtest de la stratégie")
         
-        capital_initial = st.number_input("Capital initial (XOF)", 100000, 10000000, 1000000, step=100000)
+        capital_initial = st.number_input("Capital initial (FCFA)", 100000, 10000000, 1000000, step=100000)
         frais_transaction = st.slider("Frais de transaction (%)", 0.0, 2.0, 0.5) / 100
         
         # Fonction pour exécuter le backtest
-        def run_backtest(data, capital_initial, frais_transaction, stop_loss):
+        def run_backtest(data, capital_initial, frais_transaction, stop_loss, plafond_variation, delai_livraison):
             capital = capital_initial
             positions = []
             achats_dates = []
@@ -294,7 +311,10 @@ if uploaded_file is not None:
             portfolio = pd.DataFrame(index=data.index)
             portfolio['prix'] = data['Prix']
             portfolio['actions'] = 0
+            portfolio['actions_en_attente'] = 0
+            portfolio['date_livraison'] = None
             portfolio['cash'] = capital_initial
+            portfolio['cash_reserve'] = 0  # Cash réservé pour les transactions en attente
             portfolio['valeur_actions'] = 0
             portfolio['valeur_totale'] = capital_initial
             portfolio['rendement'] = 0
@@ -303,32 +323,56 @@ if uploaded_file is not None:
                 jour = data.index[i]
                 jour_prec = data.index[i-1]
                 prix = data['Prix'].iloc[i]
+                prix_prec = data['Prix'].iloc[i-1]
+                
+                # Vérification du plafond de variation
+                variation = (prix - prix_prec) / prix_prec
+                if abs(variation) > plafond_variation:
+                    # Ajuster le prix en fonction du plafond
+                    if variation > 0:
+                        prix = prix_prec * (1 + plafond_variation)
+                    else:
+                        prix = prix_prec * (1 - plafond_variation)
                 
                 # Initialisation pour ce jour
                 actions = portfolio.loc[jour_prec, 'actions']
+                actions_en_attente = portfolio.loc[jour_prec, 'actions_en_attente']
+                date_livraison = portfolio.loc[jour_prec, 'date_livraison']
                 cash = portfolio.loc[jour_prec, 'cash']
+                cash_reserve = portfolio.loc[jour_prec, 'cash_reserve']
+                
+                # Vérification des livraisons d'actions
+                if date_livraison is not None and jour >= date_livraison:
+                    actions += actions_en_attente
+                    actions_en_attente = 0
+                    date_livraison = None
                 
                 # Vérification du stop loss pour les positions existantes
                 if actions > 0:
                     prix_achat_moyen = sum(prix_achats) / len(prix_achats) if prix_achats else 0
                     if prix < (1 - stop_loss) * prix_achat_moyen:
-                        # Vente forcée (stop loss)
+                        # Vente forcée (stop loss) - toujours soumise au délai
                         vente_montant = actions * prix * (1 - frais_transaction)
-                        cash += vente_montant
+                        cash_reserve += vente_montant
                         ventes_dates.append(jour)
                         prix_ventes.append(prix)
+                        # Ajouter le délai de livraison
+                        date_livraison = jour + timedelta(days=delai_livraison)
+                        actions_en_attente = -actions  # Valeur négative pour indiquer une vente
                         actions = 0
                         prix_achats = []
                 
                 # Signal d'achat
-                if data['achat'].iloc[i] and cash >= prix:
+                if data['achat'].iloc[i] and cash > 0:
                     # Calcul du nombre d'actions à acheter (maximum possible avec le cash disponible)
                     max_actions = int(cash / (prix * (1 + frais_transaction)))
                     if max_actions > 0:
                         # Achat
                         cout_achat = max_actions * prix * (1 + frais_transaction)
-                        cash -= cout_achat
-                        actions += max_actions
+                        cash -= cout_achat  # Réserver le cash immédiatement
+                        cash_reserve -= cout_achat  # Montant bloqué pour l'achat
+                        actions_en_attente = max_actions
+                        date_livraison = jour + timedelta(days=delai_livraison)
                         achats_dates.append(jour)
                         prix_achats.append(prix)
                 
@@ -336,17 +380,22 @@ if uploaded_file is not None:
                 elif data['vente'].iloc[i] and actions > 0:
                     # Vente
                     vente_montant = actions * prix * (1 - frais_transaction)
-                    cash += vente_montant
+                    cash_reserve += vente_montant  # Le cash sera disponible après le délai
                     ventes_dates.append(jour)
                     prix_ventes.append(prix)
+                    date_livraison = jour + timedelta(days=delai_livraison)
+                    actions_en_attente = -actions  # Valeur négative pour indiquer une vente
                     actions = 0
                     prix_achats = []
                 
                 # Mise à jour du portfolio pour ce jour
                 portfolio.loc[jour, 'actions'] = actions
+                portfolio.loc[jour, 'actions_en_attente'] = actions_en_attente
+                portfolio.loc[jour, 'date_livraison'] = date_livraison
                 portfolio.loc[jour, 'cash'] = cash
+                portfolio.loc[jour, 'cash_reserve'] = cash_reserve
                 portfolio.loc[jour, 'valeur_actions'] = actions * prix
-                portfolio.loc[jour, 'valeur_totale'] = cash + (actions * prix)
+                portfolio.loc[jour, 'valeur_totale'] = cash + cash_reserve + (actions * prix)
                 
                 # Calcul du rendement quotidien
                 if i > 0:
@@ -359,7 +408,7 @@ if uploaded_file is not None:
             return portfolio, achats_dates, ventes_dates
         
         # Exécution du backtest
-        portfolio, achats_dates, ventes_dates = run_backtest(data, capital_initial, frais_transaction, stop_loss)
+        portfolio, achats_dates, ventes_dates = run_backtest(data, capital_initial, frais_transaction, stop_loss, plafond_variation, delai_livraison)
         
         # Affichage des résultats du backtest
         st.subheader("Résultats du backtest")
@@ -371,7 +420,7 @@ if uploaded_file is not None:
         col1, col2, col3 = st.columns(3)
         col1.metric("Rendement total", f"{rendement_total:.2f}%")
         col2.metric("Rendement annualisé", f"{rendement_annualise:.2f}%")
-        col3.metric("Valeur finale du portefeuille", f"{portfolio['valeur_totale'].iloc[-1]:,.2f} XOF")
+        col3.metric("Valeur finale du portefeuille", f"{portfolio['valeur_totale'].iloc[-1]:,.2f} FCFA")
         
         # Graphique de l'évolution du portefeuille
         fig4, ax4 = plt.subplots(figsize=(12, 6))
@@ -386,7 +435,7 @@ if uploaded_file is not None:
         
         ax4.set_title('Évolution de la valeur du portefeuille')
         ax4.set_xlabel('Date')
-        ax4.set_ylabel('Valeur (XOF)')
+        ax4.set_ylabel('Valeur (FCFA)')
         ax4.grid(True, alpha=0.3)
         ax4.legend()
         ax4.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
@@ -397,9 +446,10 @@ if uploaded_file is not None:
         
         # Composition du portefeuille final
         st.subheader("Composition du portefeuille final")
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         col1.metric("Nombre d'actions", f"{portfolio['actions'].iloc[-1]}")
-        col2.metric("Liquidités", f"{portfolio['cash'].iloc[-1]:,.2f} XOF")
+        col2.metric("Actions en attente", f"{portfolio['actions_en_attente'].iloc[-1]}")
+        col3.metric("Liquidités", f"{portfolio['cash'].iloc[-1]:,.2f} FCFA")
         
         # Affichage des transactions
         st.subheader("Journal des transactions")
@@ -408,8 +458,10 @@ if uploaded_file is not None:
             transactions = []
             for date in achats_dates:
                 prix = data.loc[date, 'Prix']
+                date_livraison = date + timedelta(days=delai_livraison)
                 transactions.append({
-                    'Date': date,
+                    'Date Ordre': date,
+                    'Date Livraison': date_livraison,
                     'Type': 'Achat',
                     'Prix': prix,
                     'Montant': prix
@@ -417,8 +469,10 @@ if uploaded_file is not None:
             
             for date in ventes_dates:
                 prix = data.loc[date, 'Prix']
+                date_livraison = date + timedelta(days=delai_livraison)
                 transactions.append({
-                    'Date': date,
+                    'Date Ordre': date,
+                    'Date Livraison': date_livraison,
                     'Type': 'Vente',
                     'Prix': prix,
                     'Montant': prix
@@ -426,7 +480,7 @@ if uploaded_file is not None:
             
             transactions_df = pd.DataFrame(transactions)
             if not transactions_df.empty:
-                transactions_df = transactions_df.sort_values('Date')
+                transactions_df = transactions_df.sort_values('Date Ordre')
                 st.dataframe(transactions_df)
             else:
                 st.info("Aucune transaction n'a été effectuée pendant la période analysée.")
@@ -471,64 +525,32 @@ if uploaded_file is not None:
         plt.tight_layout()
         st.pyplot(fig5)
         
-        # Conclusion et notes
-        st.subheader("Conclusion")
-        st.markdown(f"""
-        Sur la base de ce backtest, la stratégie a généré un rendement total de **{rendement_total:.2f}%**
-        sur toute la période analysée, soit un rendement annualisé de **{rendement_annualise:.2f}%**.
+        # Graphique de la distribution des rendements
+        fig6, ax6 = plt.subplots(figsize=(12, 4))
+        ax6.hist(portfolio['rendement'] * 100, bins=50, alpha=0.7)
+        ax6.set_title('Distribution des rendements journaliers')
+        ax6.set_xlabel('Rendement (%)')
+        ax6.set_ylabel('Fréquence')
+        ax6.grid(True, alpha=0.3)
+        plt.tight_layout()
+        st.pyplot(fig6)
         
-        **Points clés:**
+        # Comparer la stratégie à un buy & hold simple
+        st.subheader("Comparaison avec Buy & Hold")
         
-        - Valeur intrinsèque calculée: {val_intrinseque:.2f} XOF
-        - Nombre total d'achats: {len(achats_dates)}
-        - Nombre total de ventes: {len(ventes_dates)}
-        - Volatilité annualisée: {volatilite_strat:.2f}%
-        - Ratio de Sharpe: {sharpe_ratio:.2f}
+        # Calcul du rendement buy & hold
+        prix_initial = data['Prix'].iloc[0]
+        prix_final = data['Prix'].iloc[-1]
+        rendement_buy_hold = (prix_final / prix_initial - 1) * 100
+        rendement_buy_hold_annualise = ((1 + rendement_buy_hold/100) ** (365 / (portfolio.index[-1] - portfolio.index[0]).days) - 1) * 100
         
-        Cette stratégie combine l'analyse fondamentale (valorisation par dividendes) et l'analyse technique
-        (croisement de moyennes mobiles) pour identifier les points d'entrée et de sortie optimaux.
-        """)
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Rendement Buy & Hold", f"{rendement_buy_hold:.2f}%")
+        col2.metric("Rendement annualisé Buy & Hold", f"{rendement_buy_hold_annualise:.2f}%")
+        col3.metric("Surperformance", f"{rendement_total - rendement_buy_hold:.2f}%")
         
-        # Avertissement
-        st.warning("""
-        **Avertissement:** Les performances passées ne préjugent pas des performances futures.
-        Cette application est fournie à des fins éducatives uniquement et ne constitue pas un conseil en investissement.
-        """)
-        
-        # Pied de page
-        st.markdown("---")
-        st.markdown("© 2025 BRVM Quant - Analyse quantitative des marchés financiers africains")
-    
-else:
-    # Si aucun fichier n'est uploadé, afficher un message d'instruction
-    title_placeholder.title("📈 BRVM Quant Backtest")
-    
-    st.info("""
-    ### Comment utiliser cette application:
-    
-    1. Préparez votre fichier CSV avec au minimum les colonnes suivantes: Date, Open, High, Low, Close, Volume
-    2. Uploadez votre fichier en utilisant le sélecteur ci-dessus
-    3. Entrez le nom de l'action que vous analysez
-    4. Ajustez les paramètres de votre stratégie
-    5. Analysez les résultats du backtest
-    
-    **Format attendu du CSV:**
-    ```
-    Date,Open,High,Low,Close,Volume
-    4/22/2025,24000,24000,24000,24000,26210
-    4/18/2025,24895,24000,24000,24000,8517
-    ...
-    ```
-    """)
-    
-    # Exemple de structure de fichier CSV
-    st.markdown("""
-    ### Exemple de structure de données:
-    
-    | Date | Open | High | Low | Close | Volume |
-    |------|------|------|-----|-------|--------|
-    | 4/22/2025 | 24000 | 24000 | 24000 | 24000 | 26210 |
-    | 4/18/2025 | 24895 | 24000 | 24000 | 24000 | 8517 |
-    | 4/17/2025 | 24890 | 24895 | 24895 | 24895 | 5381 |
-    | ... | ... | ... | ... | ... | ... |
-    """)
+        # Graphique comparatif des performances
+        fig7, ax7 = plt.subplots(figsize=(12, 6))
+        # Créer un indice de performance pour la stratégie et le buy & hold
+        perf_strategie = (1 + portfolio['rendement_cumule'])
+        perf_buy_hold = data['Prix'] / data['Prix
