@@ -21,7 +21,7 @@ st.set_page_config(
         'Report a bug': "https://www.example.com/bug",
         'About': """
         ## BRVM Quant Backtest App
-        **Version:** 1.6.1 (Correction NameError Plotting)
+        **Version:** 1.6.2 (Correction SyntaxError Combinaison Signaux)
 
         Cette application permet d'analyser et de backtester des stratégies d'investissement
         sur les actions cotées à la Bourse Régionale des Valeurs Mobilières (BRVM)
@@ -432,10 +432,10 @@ if not st.session_state.data.empty:
 
     # MM Parameters
     st.sidebar.markdown("###### Paramètres Moyennes Mobiles")
-    use_mm = st.sidebar.checkbox("Utiliser les signaux MM Crossover", value=True, key="use_mm_signal")
+    use_mm = st.sidebar.checkbox("Utiliser les signaux MM Crossover", value=st.session_state.get("use_mm_signal", True), key="use_mm_signal")
     if use_mm:
-        window_court = st.sidebar.slider("Fenêtre MM Courte (j)", 5, 100, 20, key="short_ma")
-        window_long = st.sidebar.slider("Fenêtre MM Longue (j)", 20, 250, 50, key="long_ma")
+        window_court = st.sidebar.slider("Fenêtre MM Courte (j)", 5, 100, st.session_state.get("short_ma", 20), key="short_ma")
+        window_long = st.sidebar.slider("Fenêtre MM Longue (j)", 20, 250, st.session_state.get("long_ma", 50), key="long_ma")
         if window_court >= window_long: st.sidebar.warning("La fenêtre MM Courte doit être < à la MM Longue.")
     else:
         st.sidebar.info("Signaux MM Crossover désactivés.")
@@ -444,25 +444,25 @@ if not st.session_state.data.empty:
 
     # RSI Parameters
     st.sidebar.markdown("###### Paramètres RSI (Relative Strength Index)")
-    use_rsi = st.sidebar.checkbox("Utiliser les signaux RSI Crossover", value=True, key="use_rsi_signal")
+    use_rsi = st.sidebar.checkbox("Utiliser les signaux RSI Crossover", value=st.session_state.get("use_rsi_signal", True), key="use_rsi_signal")
     if use_rsi:
-        rsi_window = st.sidebar.slider("Fenêtre RSI (j)", 5, 30, 14, key="rsi_window")
-        rsi_oversold = st.sidebar.slider("Seuil Survente RSI", 10, 40, 30, key="rsi_oversold")
-        rsi_overbought = st.sidebar.slider("Seuil Surachat RSI", 60, 90, 70, key="rsi_overbought")
+        rsi_window = st.sidebar.slider("Fenêtre RSI (j)", 5, 30, st.session_state.get("rsi_window", 14), key="rsi_window")
+        rsi_oversold = st.sidebar.slider("Seuil Survente RSI", 10, 40, st.session_state.get("rsi_oversold", 30), key="rsi_oversold")
+        rsi_overbought = st.sidebar.slider("Seuil Surachat RSI", 60, 90, st.session_state.get("rsi_overbought", 70), key="rsi_overbought")
         if rsi_oversold >= rsi_overbought: st.sidebar.warning("Seuil Survente >= Seuil Surachat.")
     else:
         st.sidebar.info("Signaux RSI Crossover désactivés.")
         rsi_window = 14 # Default values even if not used
-        rsi_overbought = 30
-        rsi_oversold = 70
+        rsi_oversold = 30
+        rsi_overbought = 70
 
     # MACD Parameters (NEW)
     st.sidebar.markdown("###### Paramètres MACD")
-    use_macd = st.sidebar.checkbox("Utiliser les signaux MACD Crossover", value=True, key="use_macd_signal")
+    use_macd = st.sidebar.checkbox("Utiliser les signaux MACD Crossover", value=st.session_state.get("use_macd_signal", True), key="use_macd_signal")
     if use_macd:
-        macd_fast_window = st.sidebar.slider("Fenêtre Rapide MACD (j)", 5, 50, 12, key="macd_fast_window")
-        macd_slow_window = st.sidebar.slider("Fenêtre Lente MACD (j)", 10, 100, 26, key="macd_slow_window")
-        macd_signal_window = st.sidebar.slider("Fenêtre Signal MACD (j)", 5, 20, 9, key="macd_signal_window")
+        macd_fast_window = st.sidebar.slider("Fenêtre Rapide MACD (j)", 5, 50, st.session_state.get("macd_fast_window", 12), key="macd_fast_window")
+        macd_slow_window = st.sidebar.slider("Fenêtre Lente MACD (j)", 10, 100, st.session_state.get("macd_slow_window", 26), key="macd_slow_window")
+        macd_signal_window = st.sidebar.slider("Fenêtre Signal MACD (j)", 5, 20, st.session_state.get("macd_signal_window", 9), key="macd_signal_window")
         if macd_fast_window >= macd_slow_window: st.sidebar.warning("Fenêtre Rapide MACD >= Lente.")
     else:
         st.sidebar.info("Signaux MACD Crossover désactivés.")
@@ -484,25 +484,43 @@ if not st.session_state.data.empty:
         key="tech_signal_method"
     )
 
-    if not use_mm and not use_rsi and not use_macd:
-        st.sidebar.warning("Aucun indicateur technique sélectionné. Les signaux techniques seront désactivés.")
-        technical_signal_method = "Aucun" # Override method if no indicator is active
+    # Display warnings if selected method requires disabled indicator
+    method_indicators = {
+        "MM Seulement": ["MM"], "RSI Seulement": ["RSI"], "MACD Seulement": ["MACD"],
+        "MM OU RSI": ["MM", "RSI"], "MM ET RSI": ["MM", "RSI"],
+        "MM OU MACD": ["MM", "MACD"], "MM ET MACD": ["MM", "MACD"],
+        "RSI OU MACD": ["RSI", "MACD"], "RSI ET MACD": ["RSI", "MACD"],
+        "MM OU RSI OU MACD": ["MM", "RSI", "MACD"], "MM ET RSI ET MACD": ["MM", "RSI", "MACD"]
+    }
+    required_for_method = method_indicators.get(technical_signal_method, [])
+    disabled_required = []
+    if "MM" in required_for_method and not use_mm: disabled_required.append("MM Crossover")
+    if "RSI" in required_for_method and not use_rsi: disabled_required.append("RSI Crossover")
+    if "MACD" in required_for_method and not use_macd: disabled_required.append("MACD Crossover")
 
+    if disabled_required:
+        st.sidebar.warning(f"La méthode '{technical_signal_method}' nécessite les signaux suivants qui sont désactivés : {', '.join(disabled_required)}. Les signaux techniques seront désactivés.")
+        tech_signal_method_active = False # Flag to easily disable combined tech signals later
+    elif not use_mm and not use_rsi and not use_macd:
+         st.sidebar.warning("Aucun indicateur technique activé. Les signaux techniques seront désactivés.")
+         tech_signal_method_active = False
+    else:
+         tech_signal_method_active = True # At least one indicator is active and matches the method requirements
 
     # Fundamental Margins (dependent on use_fundamental_signals)
     st.sidebar.markdown("###### Marges Fundamentales & Sorties")
     if use_fundamental_signals:
-        marge_achat = st.sidebar.slider("Marge achat / VI (%)", 0, 50, 20, key="buy_margin") / 100
-        marge_vente = st.sidebar.slider("Prime sortie / VI (%)", 0, 50, 10, key="sell_premium") / 100
+        marge_achat = st.sidebar.slider("Marge achat / VI (%)", 0, 50, st.session_state.get("buy_margin", 20), key="buy_margin") / 100
+        marge_vente = st.sidebar.slider("Prime sortie / VI (%)", 0, 50, st.session_state.get("sell_premium", 10), key="sell_premium") / 100
     else: marge_achat = 0; marge_vente = 0; st.sidebar.caption("Marges VI désactivées.")
 
     # Stop Loss / Take Profit / Trailing Stop (Ajout Trailing Stop)
-    stop_loss = st.sidebar.slider("Stop Loss (%) / Prix Achat", 1.0, 30.0, 10.0, 0.5, key="stop_loss") / 100
-    take_profit = st.sidebar.slider("Take Profit (%) / Prix Achat", 5.0, 100.0, 20.0, 1.0, key="take_profit") / 100
+    stop_loss = st.sidebar.slider("Stop Loss (%) / Prix Achat", 1.0, 30.0, st.session_state.get("stop_loss", 10.0), 0.5, key="stop_loss") / 100
+    take_profit = st.sidebar.slider("Take Profit (%) / Prix Achat", 5.0, 100.0, st.session_state.get("take_profit", 20.0), 1.0, key="take_profit") / 100
     # Trailing Stop Loss (NEW)
-    use_trailing_stop = st.sidebar.checkbox("Utiliser le Trailing Stop Loss", value=True, key="use_trailing_stop")
+    use_trailing_stop = st.sidebar.checkbox("Utiliser le Trailing Stop Loss", value=st.session_state.get("use_trailing_stop", True), key="use_trailing_stop")
     if use_trailing_stop:
-        trailing_stop_loss_pct = st.sidebar.slider("Trailing Stop Loss (%)", 1.0, 20.0, 5.0, 0.5, key="trailing_stop_pct") / 100
+        trailing_stop_loss_pct = st.sidebar.slider("Trailing Stop Loss (%)", 1.0, 20.0, st.session_state.get("trailing_stop_pct", 5.0), 0.5, key="trailing_stop_pct") / 100
     else:
         st.sidebar.info("Trailing Stop Loss désactivé.")
         trailing_stop_loss_pct = 0 # Default value if not used
@@ -510,17 +528,17 @@ if not st.session_state.data.empty:
 
     # --- Marché (Pas de changement) ---
     st.sidebar.markdown("**Paramètres Marché (BRVM)**")
-    plafond_variation = st.sidebar.slider("Plafond variation /j (%)", 5.0, 15.0, 7.5, 0.5, key="variation_cap") / 100
-    delai_livraison = st.sidebar.slider("Délai livraison (j ouvrés)", 1, 5, 3, key="settlement_days")
+    plafond_variation = st.sidebar.slider("Plafond variation /j (%)", 5.0, 15.0, st.session_state.get("variation_cap", 7.5), 0.5, key="variation_cap") / 100
+    delai_livraison = st.sidebar.slider("Délai livraison (j ouvrés)", 1, 5, st.session_state.get("settlement_days", 3), key="settlement_days")
 
     # --- Backtest Parameters ---
     st.sidebar.subheader("5. Paramètres du Backtest")
-    capital_initial = st.sidebar.number_input("Capital initial (FCFA)", 100000, 100000000, 1000000, step=100000, key="initial_capital")
-    frais_transaction = st.sidebar.slider("Frais transaction (%)", 0.0, 5.0, 0.5, 0.05, key="commission_rate") / 100
-    taux_sans_risque = st.sidebar.slider("Taux sans risque annuel (%)", 0.0, 10.0, 3.0, 0.1, key="risk_free_rate") / 100
+    capital_initial = st.sidebar.number_input("Capital initial (FCFA)", 100000, 100000000, st.session_state.get("initial_capital", 1000000), step=100000, key="initial_capital")
+    frais_transaction = st.sidebar.slider("Frais transaction (%)", 0.0, 5.0, st.session_state.get("commission_rate", 0.5), 0.05, key="commission_rate") / 100
+    taux_sans_risque = st.sidebar.slider("Taux sans risque annuel (%)", 0.0, 10.0, st.session_state.get("risk_free_rate", 3.0), 0.1, key="risk_free_rate") / 100
 
     # Paramètre pour la quantité à investir
-    invest_percentage = st.sidebar.slider("Investir (%) du cash dispo par trade", 10, 100, 100, 5, key="invest_percentage") / 100
+    invest_percentage = st.sidebar.slider("Investir (%) du cash dispo par trade", 10, 100, st.session_state.get("invest_percentage", 100), 5, key="invest_percentage") / 100
     st.sidebar.caption("Le cash investi inclut les frais.")
 
 
@@ -538,17 +556,19 @@ if not st.session_state.data.empty:
         rsi = 100 - (100 / (1 + rs.replace([np.inf, -np.inf], np.nan).fillna(0))).fillna(0)
         return rsi
 
-    # Function to calculate MACD (NEW)
+    # Function to calculate MACD (NEW - Adjusted for NaN handling)
     def calculate_macd(df, column='Prix', fast_window=12, slow_window=26, signal_window=9):
-        if len(df) < max(fast_window, slow_window, signal_window):
-             st.warning(f"Peut-être pas assez de données pour calculer le MACD (min {max(fast_window, slow_window, signal_window)} jours). Les premières valeurs seront NaN.")
-             return pd.Series(np.nan, index=df.index), pd.Series(np.nan, index=df.index), pd.Series(np.nan, index=df.index)
-
         # Ensure price column has no NaNs before calculating EMAs
         price_series = df[column].dropna()
         if price_series.empty:
              st.warning("La série de prix est vide ou entièrement NaN pour le calcul du MACD.")
              return pd.Series(np.nan, index=df.index), pd.Series(np.nan, index=df.index), pd.Series(np.nan, index=df.index)
+
+        # Ensure sufficient data for initial EMA calculation
+        if len(price_series) < max(fast_window, slow_window, signal_window):
+             st.warning(f"Pas assez de données ({len(price_series)}j) pour calculer le MACD avec vos paramètres (min {max(fast_window, slow_window, signal_window)} jours requis). Les valeurs seront NaN.")
+             return pd.Series(np.nan, index=df.index), pd.Series(np.nan, index=df.index), pd.Series(np.nan, index=df.index)
+
 
         fast_ema = price_series.ewm(span=fast_window, adjust=False).mean()
         slow_ema = price_series.ewm(span=slow_window, adjust=False).mean()
@@ -568,20 +588,19 @@ if not st.session_state.data.empty:
     try:
         min_data_needed_mm = window_long if use_mm else 0
         min_data_needed_rsi = rsi_window if use_rsi else 0
-        min_data_needed_macd_raw = max(macd_fast_window, macd_slow_window) + macd_signal_window -1 # Rough estimate based on EMAs
-        min_data_needed_macd = min_data_needed_macd_raw if use_macd else 0 # min data for MACD signal to be non-NaN
+        # Approximate min data for MACD signal cross
+        min_data_needed_macd = max(macd_fast_window, macd_slow_window) + macd_signal_window -1 if use_macd else 0
 
         min_data_needed = max(min_data_needed_mm, min_data_needed_rsi, min_data_needed_macd)
 
-
         if len(data) < min_data_needed:
-             st.warning(f"Pas assez données ({len(data)}j) pour calculer tous les indicateurs avec vos paramètres. Minimum recommandé: {min_data_needed} jours. Certains indicateurs/signaux seront NaN au début.")
+             st.warning(f"Pas assez données ({len(data)}j) pour calculer tous les indicateurs avec vos paramètres. Minimum recommandé: {min_data_needed} jours. Les premières valeurs seront NaN.")
              # Continue execution, NaNs will appear where data is insufficient
 
         # MM
         if use_mm:
-            data['MM_Court'] = data['Prix'].rolling(window=window_court, min_periods=window_court).mean() # Use min_periods=window
-            data['MM_Long'] = data['Prix'].rolling(window=window_long, min_periods=window_long).mean() # Use min_periods=window
+            data['MM_Court'] = data['Prix'].rolling(window=window_court, min_periods=window_court).mean()
+            data['MM_Long'] = data['Prix'].rolling(window=window_long, min_periods=window_long).mean()
         else:
             data['MM_Court'], data['MM_Long'] = np.nan, np.nan # Ensure columns exist
 
@@ -610,11 +629,10 @@ if not st.session_state.data.empty:
     data['prix_vente_fondamental'] = (1 + marge_vente) * val_intrinseque if use_fundamental_signals and val_intrinseque > 0 else np.nan
 
 
-    # Signaux Techniques Individuels (Recalculé à chaque exécution)
-    # Initialiser avec False si l'indicateur n'est pas activé
+    # Signaux Techniques Individuels (Calculés si l'indicateur est activé)
+    # Les signaux seront False partout si l'indicateur n'est pas utilisé
     data['signal_technique_mm'] = 0
-    if use_mm and 'MM_Court' in data.columns and 'MM_Long' in data.columns: # Check if columns exist
-         # Ensure MM data is available for comparison
+    if use_mm and 'MM_Court' in data.columns and 'MM_Long' in data.columns:
          valid_ma_shift = (data['MM_Court'].notna()) & (data['MM_Long'].notna()) & (data['MM_Court'].shift(1).notna()) & (data['MM_Long'].shift(1).notna())
          buy_cond_mm = valid_ma_shift & (data['MM_Court'] > data['MM_Long']) & (data['MM_Court'].shift(1) <= data['MM_Long'].shift(1))
          sell_cond_mm = valid_ma_shift & (data['MM_Court'] < data['MM_Long']) & (data['MM_Court'].shift(1) >= data['MM_Long'].shift(1))
@@ -623,8 +641,7 @@ if not st.session_state.data.empty:
 
 
     data['signal_technique_rsi'] = 0
-    if use_rsi and 'RSI' in data.columns: # Check if column exists
-        # Ensure RSI data is available for comparison
+    if use_rsi and 'RSI' in data.columns:
         valid_rsi_shift = data['RSI'].notna() & data['RSI'].shift(1).notna()
         buy_cond_rsi = valid_rsi_shift & (data['RSI'] > rsi_oversold) & (data['RSI'].shift(1) <= rsi_oversold)
         sell_cond_rsi = valid_rsi_shift & (data['RSI'] < rsi_overbought) & (data['RSI'].shift(1) >= rsi_overbought)
@@ -633,8 +650,7 @@ if not st.session_state.data.empty:
 
 
     data['signal_technique_macd'] = 0
-    if use_macd and 'MACD' in data.columns and 'MACD_Signal' in data.columns: # Check if columns exist
-        # Ensure MACD data is available for comparison
+    if use_macd and 'MACD' in data.columns and 'MACD_Signal' in data.columns:
         valid_macd_shift = (data['MACD'].notna()) & (data['MACD_Signal'].notna()) & (data['MACD'].shift(1).notna()) & (data['MACD_Signal'].shift(1).notna())
         buy_cond_macd = valid_macd_shift & (data['MACD'] > data['MACD_Signal']) & (data['MACD'].shift(1) <= data['MACD_Signal'].shift(1))
         sell_cond_macd = valid_macd_shift & (data['MACD'] < data['MACD_Signal']) & (data['MACD'].shift(1) >= data['MACD_Signal'].shift(1))
@@ -642,98 +658,60 @@ if not st.session_state.data.empty:
         data.loc[sell_cond_macd, 'signal_technique_macd'] = -1
 
 
-    # Signaux Techniques Combinés selon la méthode sélectionnée (LOGIQUE MISE À JOUR)
-    cond_achat_tech_base = pd.Series(False, index=data.index) # Initialiser à False
-    cond_vente_tech_base = pd.Series(False, index=data.index) # Initialiser à False
+    # Signaux Techniques Combinés selon la méthode sélectionnée (LOGIQUE CORRIGÉE)
+    # Initialiser à False. Si tech_signal_method_active est False, ils restent False.
+    cond_achat_tech_base = pd.Series(False, index=data.index)
+    cond_vente_tech_base = pd.Series(False, index=data.index)
 
-    # Appliquer la logique de combinaison sélectionnée en utilisant les signaux individuels calculés
-    # Assurez-vous que les signaux individuels existent avant de les utiliser dans les conditions combinées
-    mm_buy_sig = (data['signal_technique_mm'] == 1) if use_mm else pd.Series(False, index=data.index)
-    mm_sell_sig = (data['signal_technique_mm'] == -1) if use_mm else pd.Series(False, index=data.index)
-    rsi_buy_sig = (data['signal_technique_rsi'] == 1) if use_rsi else pd.Series(False, index=data.index)
-    rsi_sell_sig = (data['signal_technique_rsi'] == -1) if use_rsi else pd.Series(False, index=data.index)
-    macd_buy_sig = (data['signal_technique_macd'] == 1) if use_macd else pd.Series(False, index=data.index)
-    macd_sell_sig = (data['signal_technique_macd'] == -1) if use_macd else pd.Series(False, index=data.index)
+    if tech_signal_method_active: # Only combine if at least one relevant indicator is active
+        # Get individual signals (False if indicator not used or data not available)
+        mm_buy_sig = (data['signal_technique_mm'] == 1)
+        mm_sell_sig = (data['signal_technique_mm'] == -1)
+        rsi_buy_sig = (data['signal_technique_rsi'] == 1)
+        rsi_sell_sig = (data['signal_technique_rsi'] == -1)
+        macd_buy_sig = (data['signal_technique_macd'] == 1)
+        macd_sell_sig = (data['signal_technique_macd'] == -1)
 
+        # Apply the selected combination logic directly
+        if technical_signal_method == "MM OU RSI OU MACD":
+            cond_achat_tech_base = mm_buy_sig | rsi_buy_sig | macd_buy_sig
+            cond_vente_tech_base = mm_sell_sig | rsi_sell_sig | macd_sell_sig
+        elif technical_signal_method == "MM ET RSI ET MACD":
+            cond_achat_tech_base = mm_buy_sig & rsi_buy_sig & macd_buy_sig
+            cond_vente_tech_base = mm_sell_sig & rsi_sell_sig & macd_sell_sig
+        elif technical_signal_method == "MM Seulement":
+            cond_achat_tech_base = mm_buy_sig
+            cond_vente_tech_base = mm_sell_sig
+        elif technical_signal_method == "RSI Seulement":
+            cond_achat_tech_base = rsi_buy_sig
+            cond_vente_tech_base = rsi_sell_sig
+        elif technical_signal_method == "MACD Seulement":
+            cond_achat_tech_base = macd_buy_sig
+            cond_vente_tech_base = macd_sell_sig
+        elif technical_signal_method == "MM OU RSI":
+            cond_achat_tech_base = mm_buy_sig | rsi_buy_sig
+            cond_vente_tech_base = mm_sell_sig | rsi_sell_sig
+        elif technical_signal_method == "MM ET RSI":
+            cond_achat_tech_base = mm_buy_sig & rsi_buy_sig
+            cond_vente_tech_base = mm_sell_sig & rsi_sell_sig
+        elif technical_signal_method == "MM OU MACD":
+            cond_achat_tech_base = mm_buy_sig | macd_buy_sig
+            cond_vente_tech_base = mm_sell_sig | macd_sell_sig
+        elif technical_signal_method == "MM ET MACD":
+            cond_achat_tech_base = mm_buy_sig & macd_buy_sig
+            cond_vente_tech_base = mm_sell_sig & macd_sell_sig
+        elif technical_signal_method == "RSI OU MACD":
+            cond_achat_tech_base = rsi_buy_sig | macd_buy_sig
+            cond_vente_tech_base = rsi_sell_sig | macd_sell_sig
+        elif technical_signal_method == "RSI ET MACD":
+            cond_achat_tech_base = rsi_buy_sig & macd_buy_sig
+            cond_vente_tech_base = rsi_sell_sig & macd_sell_sig
+        # Add other combinations here if needed
 
-    if technical_signal_method == "MM OU RSI OU MACD":
-        cond_achat_tech_base = mm_buy_sig | rsi_buy_sig | macd_buy_sig
-        cond_vente_tech_base = mm_sell_sig | rsi_sell_sig | macd_sell_sig
-    elif technical_signal_method == "MM ET RSI ET MACD":
-        # Si aucun n'est actif, le résultat ET devrait être False partout, pas True.
-        if use_mm or use_rsi or use_macd:
-            cond_achat_tech_base = pd.Series(True, index=data.index)
-            if use_mm: cond_achat_tech_base = cond_achat_tech_base & mm_buy_sig
-            else: cond_achat_tech_base = False # If MM not used but in AND, condition is False
-            if use_rsi: cond_achat_tech_base = cond_achat_tech_base & rsi_buy_sig
-            else: cond_achat_tech_base = False # If RSI not used but in AND, condition is False
-            if use_macd: cond_achat_tech_base = cond_achat_tech_base & macd_buy_sig
-            else: cond_achat_tech_base = False # If MACD not used but in AND, condition is False
-            # Ensure it's False if ANY *required* indicator is not used
-            if (technical_signal_method == "MM ET RSI ET MACD") and (not use_mm or not use_rsi or not use_macd):
-                cond_achat_tech_base = pd.Series(False, index=data.index)
+        # Note: If a required indicator for the chosen method is NOT used (e.g. MM ET RSI, but use_mm is False),
+        # the corresponding buy/sell signal (mm_buy_sig) will be False everywhere due to its definition.
+        # The '&' operation will then correctly result in a False signal everywhere for that combination method.
 
-
-            cond_vente_tech_base = pd.Series(True, index=data.index)
-            if use_mm: cond_vente_tech_base = cond_vente_tech_base & mm_sell_sig
-            else: cond_vente_tech_base = False
-            if use_rsi: cond_vente_tech_base = cond_vente_tech_base & rsi_sell_sig
-            else: cond_vente_tech_base = False
-            if use_macd: cond_vente_tech_base = cond_vente_tech_base & macd_sell_sig
-            else: cond_vente_tech_base = False
-            # Ensure it's False if ANY *required* indicator is not used
-            if (technical_signal_method == "MM ET RSI ET MACD") and (not use_mm or not use_rsi or not use_macd):
-                 cond_vente_tech_base = pd.Series(False, index=data.index)
-
-
-        else:
-              st.warning(f"Aucun indicateur technique activé pour la combinaison '{technical_signal_method}'. Signaux techniques désactivés.") # More specific warning
-
-
-    elif technical_signal_method == "MM Seulement":
-        cond_achat_tech_base = mm_buy_sig
-        cond_vente_tech_base = mm_sell_sig
-        if not use_mm: st.warning(f"MM Crossover n'est pas activé, mais la méthode '{technical_signal_method}' est sélectionnée. Signaux techniques désactivés.")
-
-    elif technical_signal_method == "RSI Seulement":
-        cond_achat_tech_base = rsi_buy_sig
-        cond_vente_tech_base = rsi_sell_sig
-        if not use_rsi: st.warning(f"RSI Crossover n'est pas activé, mais la méthode '{technical_signal_method}' est sélectionnée. Signaux techniques désactivés.")
-
-    elif technical_signal_method == "MACD Seulement":
-        cond_achat_tech_base = macd_buy_sig
-        cond_vente_tech_base = macd_sell_sig
-        if not use_macd: st.warning(f"MACD Crossover n'est pas activé, mais la méthode '{technical_signal_method}' est sélectionnée. Signaux techniques désactivés.")
-
-    elif technical_signal_method == "MM OU RSI":
-        cond_achat_tech_base = mm_buy_sig | rsi_buy_sig
-        cond_vente_tech_base = mm_sell_sig | rsi_sell_sig
-        if not use_mm and not use_rsi: st.warning(f"Ni MM ni RSI ne sont activés, mais la méthode '{technical_signal_method}' est sélectionnée. Signaux techniques désactivés.")
-
-    elif technical_signal_method == "MM ET RSI":
-        cond_achat_tech_base = mm_buy_sig & rsi_buy_sig
-        cond_vente_tech_base = mm_sell_sig & rsi_sell_sig
-        if not use_mm or not use_rsi: st.warning(f"Au moins un indicateur (MM ou RSI) n'est pas activé, mais la méthode '{technical_signal_method}' est sélectionnée. Signaux techniques désactivés.")
-
-    elif technical_signal_method == "MM OU MACD":
-        cond_achat_tech_base = mm_buy_sig | macd_buy_sig
-        cond_vente_tech_base = mm_sell_sig | macd_sell_sig
-        if not use_mm and not use_macd: st.warning(f"Ni MM ni MACD ne sont activés, mais la méthode '{technical_signal_method}' est sélectionnée. Signaux techniques désactivés.")
-
-    elif technical_signal_method == "MM ET MACD":
-        cond_achat_tech_base = mm_buy_sig & macd_buy_sig
-        cond_vente_tech_base = mm_sell_sig & macd_sell_sig
-        if not use_mm or not use_macd: st.warning(f"Au moins un indicateur (MM ou MACD) n'est pas activé, mais la méthode '{technical_signal_method}' est sélectionnée. Signaux techniques désactivés.")
-
-    elif technical_signal_method == "RSI OU MACD":
-        cond_achat_tech_base = rsi_buy_sig | macd_buy_sig
-        cond_vente_tech_base = rsi_sell_sig | macd_sell_sig
-        if not use_rsi and not use_macd: st.warning(f"Ni RSI ni MACD ne sont activés, mais la méthode '{technical_signal_method}' est sélectionnée. Signaux techniques désactivés.")
-
-    elif technical_signal_method == "RSI ET MACD":
-        cond_achat_tech_base = rsi_buy_sig & macd_buy_sig
-        cond_vente_tech_base = rsi_sell_sig & macd_sell_sig
-        if not use_rsi or not use_macd: st.warning(f"Au moins un indicateur (RSI ou MACD) n'est pas activé, mais la méthode '{technical_signal_method}' est sélectionnée. Signaux techniques désactivés.")
 
     # Final combined signals (Technical + Fundamental)
     if use_fundamental_signals:
@@ -759,7 +737,7 @@ if not st.session_state.data.empty:
     st.subheader("Analyse Technique - Indicateurs")
     try:
         # Determine number of plots based on activated indicators
-        nrows_plots = 1 # Price/MM plot
+        nrows_plots = 1 # Start with price/MM plot
         if use_rsi and 'RSI' in data.columns and not data['RSI'].isnull().all(): nrows_plots += 1 # Add RSI plot
         if use_macd and 'MACD' in data.columns and not data['MACD'].isnull().all(): nrows_plots += 1 # Add MACD plot
 
@@ -812,7 +790,7 @@ if not st.session_state.data.empty:
                  ax_rsi.grid(True, linestyle='--', alpha=0.6); ax_rsi.legend(loc='upper left')
              else:
                   ax_rsi.set_title('Indicateur RSI (Désactivé ou Indisponible)'); ax_rsi.set_ylabel('RSI')
-                  ax_rsi.text(0.5, 0.5, "RSI désactivé ou calcul impossible", horizontalalignment='center', verticalalignment='center', transform=ax_rsi.transAxes, color='grey')
+                  ax_rsi.text(0.5, 0.5, "RSI désactivé ou calcul impossible", horizontalalignment='center', verticalalignment='center', transform=rsi_ax.transAxes, color='grey')
 
 
         # MACD Plot (NEW) - Use dropna().index
@@ -844,7 +822,7 @@ if not st.session_state.data.empty:
     # Graphique Signaux (CORRECTION: Utiliser vente_dates_vis)
     try:
         fig3, ax3 = plt.subplots(figsize=(12, 6))
-        ax3.plot(data.index, data['Prix'], label='Prix', lw=1.5, zorder=2)
+        ax3.plot(data.index, data['Prix'], label='Prix', lw=1.5, alpha=0.7, zorder=2)
 
         if use_fundamental_signals and val_intrinseque is not None and val_intrinseque > 0:
             ax3.axhline(y=val_intrinseque, color='grey', ls='-', alpha=0.7, label=f'VI ({val_intrinseque:,.0f})', zorder=1)
@@ -857,27 +835,31 @@ if not st.session_state.data.empty:
              ax3.plot(portfolio_df['trailing_stop_level'].dropna().index, portfolio_df['trailing_stop_level'].dropna(), label=f'Trailing Stop ({trailing_stop_loss_pct*100:.1f}%)', lw=1.5, color='orange', linestyle='--', zorder=3)
 
 
-        achats_sig = data[data['achat'] & data['Prix'].notna()]
+        achats_plot_df = data.loc[achat_dates_vis]
         # CORRECTION ICI: Utiliser la bonne variable vente_dates_vis
         ventes_plot_df = data.loc[vente_dates_vis] # <-- CORRIGÉ
 
 
-        if not achats_sig.empty: ax3.scatter(achats_sig.index, achats_sig['Prix'], color='lime', edgecolor='green', s=100, marker='^', label='Signal Achat Strat', zorder=5)
+        if not achats_plot_df.empty: ax3.scatter(achats_plot_df.index, achats_plot_df['Prix'], color='lime', edgecolor='green', s=100, marker='^', label='Achat', zorder=5)
         if not ventes_plot_df.empty: # Utiliser le DataFrame corrigé
-             # S'assurer que les points de vente sont tracés au prix effectif du jour de vente si disponible, sinon au prix brut
              # Utiliser les prix effectifs du portefeuille pour les points de vente
-             vente_plot_prices = portfolio_df.loc[ventes_plot_df.index, 'prix_effectif']
-             # Fallback au prix brut si prix_effectif est NaN (ne devrait pas arriver à ce stade mais sécurité)
-             vente_plot_prices = vente_plot_prices.fillna(ventes_plot_df['Prix'])
+             # Assurez-vous que l'index de ventes_plot_df existe bien dans portfolio_df
+             valid_sell_indices = ventes_plot_df.index.intersection(portfolio_df.index)
+             if not valid_sell_indices.empty:
+                 vente_plot_prices = portfolio_df.loc[valid_sell_indices, 'prix_effectif']
+                 # Fallback au prix brut si prix_effectif est NaN (ne devrait pas arriver à ce stade mais sécurité)
+                 vente_plot_prices = vente_plot_prices.fillna(data.loc[valid_sell_indices, 'Prix'])
+                 ax3.scatter(valid_sell_indices, vente_plot_prices, color='tomato', edgecolor='red', s=100, marker='v', label='Vente', zorder=5)
+             else:
+                 st.warning("Impossible de trouver les prix effectifs pour tracer les ventes.")
 
-             ax3.scatter(ventes_plot_df.index, vente_plot_prices, color='tomato', edgecolor='red', s=100, marker='v', label='Vente', zorder=5)
 
         ax3.set_title('Prix et Signaux Trading Stratégie'); ax3.set_xlabel('Date'); ax3.set_ylabel('Prix (FCFA)')
         ax3.grid(True, linestyle='--', alpha=0.6, zorder=1); ax3.legend(loc='best')
         ax3.get_yaxis().set_major_formatter(plt.FuncFormatter(lambda x, p: format(int(x), ',')))
         ax3.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m-%d')); ax3.xaxis.set_major_locator(mdates.AutoDateLocator(minticks=5, maxticks=10))
         fig3.autofmt_xdate(); plt.tight_layout(); st.pyplot(fig3)
-    except Exception as e: st.error(f"Erreur graphique signaux : {e}"); st.error(traceback.format_exc())
+    except Exception as e: st.error(f"Erreur graphique transactions : {e}"); st.error(traceback.format_exc())
 
 
     # --- Tableau des Transactions (Pas de changement) ---
