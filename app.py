@@ -4,604 +4,298 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from datetime import datetime, timedelta
-import io
+from pandas.tseries.offsets import CustomBusinessDay
+import holidays
+import plotly.graph_objects as go
+import numba as nb
 import base64
+import re
+import hashlib
+import tempfile
+from io import BytesIO
 
-# Configuration de la page Streamlit
-
+# Configuration de la page
 st.set_page_config(
-page_title="BRVM Quant Backtest",
-layout="wide",
-menu_items={
-'About': "Analyse quantitative des actions sur la BRVM"
-}
+    page_title="BRVM Quant Pro",
+    layout="wide",
+    page_icon="📈",
+    menu_items={
+        'Get Help': 'https://www.brvm.org',
+        'About': "Plateforme professionnelle de backtesting pour la BRVM"
+    }
 )
 
-# Titre et introduction dynamique
+# ---- Sécurité ----
+ALLOWED_EXTENSIONS = {'csv'}
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
 
-title_placeholder = st.empty()  # Placeholder pour le titre qui sera mis à jour
+def validate_file(file):
+    if file.name.split('.')[-1].lower() not in ALLOWED_EXTENSIONS:
+        raise ValueError("Type de fichier non autorisé")
+    if file.size > MAX_FILE_SIZE:
+        raise ValueError("Taille de fichier excède 50MB")
+    return True
+
+def sanitize_input(text):
+    return re.sub(r'[^a-zA-Z0-9\s_-]', '', text)
+
+# ---- Optimisation ----
+@st.cache_data(show_spinner=False)
+def load_data(file):
+    return pd.read_csv(file)
+
+# ---- Gestion des jours fériés ----
+class BRVMHolidays(holidays.HolidayBase):
+    def _populate(self, year):
+        # Jours fériés de la BRVM (à compléter)
+        self[datetime(year, 1, 1)] = "Nouvel An"
+        self[datetime(year, 4, 16)] = "Fête de l'Indépendance"
+        self[datetime(year, 5, 1)] = "Fête du Travail"
+        self[datetime(year, 12, 25)] = "Noël"
+
+brvm_business_day = CustomBusinessDay(holidays=BRVMHolidays())
+
+# ---- Interface Utilisateur ----
+st.title("🚀 BRVM Quant Pro - Backtest Professionnel")
 st.markdown("""
-Cette application permet d'analyser et de backtester des stratégies d'investissement
-sur les actions cotées à la Bourse Régionale des Valeurs Mobilières (BRVM).
+**Solution complète de backtesting pour la Bourse Régionale des Valeurs Mobilières (BRVM)**  
+*Intègre les spécificités du marché ouest-africain*
 """)
 
-# Upload de fichier CSV
+with st.sidebar:
+    st.header("Configuration")
+    uploaded_file = st.file_uploader("Téléverser CSV", type=['csv'])
+    strategy_choice = st.selectbox(
+        "Stratégie à comparer",
+        ["Buy & Hold", "Moyennes Mobiles", "RSI", "MACD"]
+    )
+    risk_free_rate = st.slider("Taux sans risque (%)", 0.0, 10.0, 3.0) / 100
+    st.markdown("---")
+    st.markdown("**Aide rapide:**\n- Format CSV requis\n- Colonnes: Date, Open, High, Low, Close, Volume")
 
-uploaded_file = st.file_uploader("Chargez votre fichier CSV d'historique de cours", type=['csv'])
-
-# Fonction pour charger et traiter les données
-
+# ---- Traitement des données ----
 def process_data(file):
-try:
-# Tenter de lire le fichier avec différents séparateurs
-try:
-# Essayer de lire les premières lignes pour déterminer le format
-sample = file.read(1024)
-file.seek(0)  # Revenir au début du fichier
+    try:
+        # Validation et nettoyage
+        validate_file(file)
+        file_hash = hashlib.md5(file.getvalue()).hexdigest()
+        if st.session_state.get('file_hash') != file_hash:
+            st.session_state.clear()
+            st.session_state.file_hash = file_hash
 
-```
-        # Détecter le séparateur
-        if b'\\t' in sample:
-            separator = '\\t'
-        elif b';' in sample:
-            separator = ';'
-        else:
-            separator = ','
-
-        # Lire le CSV avec le séparateur identifié
-        df = pd.read_csv(file, sep=separator)
-
-        # Vérifier si la première colonne est numérique (parfois un index)
-        if df.columns[0].isdigit() or df.iloc[0, 0].isdigit():
-            file.seek(0)
-            df = pd.read_csv(file, sep=separator, index_col=0)
-
+        # Lecture avec détection automatique
+        df = pd.read_csv(file, parse_dates=True, infer_datetime_format=True)
+        
+        # Interface de mapping des colonnes
+        with st.expander("🔧 Mapping des colonnes"):
+            cols = df.columns.tolist()
+            col1, col2 = st.columns(2)
+            mapping = {}
+            with col1:
+                mapping['date'] = st.selectbox("Colonne Date", cols, index=0)
+                mapping['open'] = st.selectbox("Colonne Open", cols, index=1)
+                mapping['high'] = st.selectbox("Colonne High", cols, index=2)
+            with col2:
+                mapping['low'] = st.selectbox("Colonne Low", cols, index=3)
+                mapping['close'] = st.selectbox("Colonne Close", cols, index=4)
+                mapping['volume'] = st.selectbox("Colonne Volume", cols, index=5 if len(cols) > 5 else 0)
+        
+        # Conversion des types
+        df = df.rename(columns=mapping)
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        numeric_cols = ['open', 'high', 'low', 'close', 'volume']
+        df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors='coerce')
+        
+        # Validation finale
+        if df.isnull().sum().sum() > 0:
+            st.warning("Certaines données sont manquantes ou invalides. Les lignes concernées seront filtrées.")
+            df = df.dropna()
+        
+        df = df.set_index('date').sort_index()
+        df['returns'] = df['close'].pct_change()
+        return df
+    
     except Exception as e:
-        st.error(f"Erreur lors de la lecture initiale: {e}")
-        try:
-            file.seek(0)
-            df = pd.read_csv(file)
-        except:
-            file.seek(0)
-            df = pd.read_csv(file, sep=None, engine='python')  # Détection automatique du séparateur
-
-    # Afficher les colonnes détectées pour le débogage
-    st.write("Colonnes détectées:", list(df.columns))
-
-    # Identifier les colonnes nécessaires peu importe la casse
-    columns_lower = [col.lower() for col in df.columns]
-
-    date_col = None
-    open_col = None
-    high_col = None
-    low_col = None
-    close_col = None
-    volume_col = None
-
-    for i, col_name in enumerate(columns_lower):
-        if 'date' in col_name:
-            date_col = df.columns[i]
-        elif 'open' in col_name:
-            open_col = df.columns[i]
-        elif 'high' in col_name:
-            high_col = df.columns[i]
-        elif 'low' in col_name:
-            low_col = df.columns[i]
-        elif 'close' in col_name:
-            close_col = df.columns[i]
-        elif 'vol' in col_name:
-            volume_col = df.columns[i]
-
-    # Si les colonnes n'ont pas été trouvées par nom, essayer par position
-    if date_col is None and len(df.columns) >= 1:
-        date_col = df.columns[0]
-    if open_col is None and len(df.columns) >= 2:
-        open_col = df.columns[1]
-    if high_col is None and len(df.columns) >= 3:
-        high_col = df.columns[2]
-    if low_col is None and len(df.columns) >= 4:
-        low_col = df.columns[3]
-    if close_col is None and len(df.columns) >= 5:
-        close_col = df.columns[4]
-    if volume_col is None and len(df.columns) >= 6:
-        volume_col = df.columns[5]
-
-    missing_columns = []
-    if date_col is None:
-        missing_columns.append("Date")
-    if open_col is None:
-        missing_columns.append("Open")
-    if high_col is None:
-        missing_columns.append("High")
-    if low_col is None:
-        missing_columns.append("Low")
-    if close_col is None:
-        missing_columns.append("Close")
-    if volume_col is None:
-        missing_columns.append("Volume")
-
-    if missing_columns:
-        st.error(f"Colonnes manquantes: {', '.join(missing_columns)}. Assurez-vous que votre CSV contient ces informations.")
-        # Afficher les premières lignes pour aider à diagnostiquer
-        st.write("Aperçu des données:", df.head())
-        return None
-
-    # Créer un nouveau DataFrame avec les colonnes standardisées
-    df_standardized = pd.DataFrame()
-    df_standardized['Date'] = pd.to_datetime(df[date_col], errors='coerce')
-    df_standardized['Ouverture'] = pd.to_numeric(df[open_col], errors='coerce')
-    df_standardized['Plus_Haut'] = pd.to_numeric(df[high_col], errors='coerce')
-    df_standardized['Plus_Bas'] = pd.to_numeric(df[low_col], errors='coerce')
-    df_standardized['Prix'] = pd.to_numeric(df[close_col], errors='coerce')
-    df_standardized['Volume'] = pd.to_numeric(df[volume_col], errors='coerce')
-
-    # Supprimer les lignes avec des dates manquantes
-    df_standardized = df_standardized.dropna(subset=['Date'])
-
-    # Trier par date (du plus ancien au plus récent)
-    df_standardized = df_standardized.sort_values('Date')
-
-    # Définir la date comme index
-    df_standardized = df_standardized.set_index('Date')
-
-    # Ajouter la colonne Variation
-    df_standardized['Variation'] = df_standardized['Prix'].diff()
-    df_standardized['Variation_%'] = df_standardized['Prix'].pct_change() * 100
-
-    # Remplir les valeurs NaN
-    df_standardized = df_standardized.fillna(method='ffill')
-
-    return df_standardized
-
-except Exception as e:
-    st.error(f"Erreur lors du traitement des données: {e}")
-    return None
-
-```
-
-# Fonction pour créer un lien de téléchargement pour le rapport
-
-def get_csv_download_link(df, filename="rapport_backtest.csv"):
-csv = df.to_csv(index=True)
-b64 = base64.b64encode(csv.encode()).decode()
-href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">Télécharger le rapport (CSV)</a>'
-return href
-
-# Si un fichier est uploadé, traiter les données
-
-if uploaded_file is not None:
-# Demander le titre de l'action
-stock_name = st.text_input("Nom de l'action", "Action")
-
-```
-# Mettre à jour le titre avec le nom de l'action
-title_placeholder.title(f"📈 BRVM Quant Backtest - {stock_name}")
-
-# Traiter les données
-data = process_data(uploaded_file)
-
-if data is not None:
-    # Affichage des données brutes (optionnel, avec un bouton pour afficher/masquer)
-    with st.expander("Afficher les données brutes"):
-        st.dataframe(data.tail(100))
-
-    # Visualisation du cours de l'action
-    st.subheader(f"Cours historique de {stock_name}")
-    fig, ax = plt.subplots(figsize=(12, 6))
-    ax.plot(data.index, data['Prix'], linewidth=2)
-    ax.set_title(f'Évolution du cours de {stock_name}')
-    ax.set_xlabel('Date')
-    ax.set_ylabel('Prix (FCFA)')
-    ax.grid(True, alpha=0.3)
-
-    # Amélioration du format des dates sur l'axe X
-    ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
-    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    st.pyplot(fig)
-
-    # Paramètres de la stratégie
-    st.subheader("Paramètres de la stratégie")
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        # Paramètres fondamentaux
-        st.markdown("### Analyse fondamentale")
-        rendement_exige = st.slider("Taux d'actualisation (%)", 5, 20, 12) / 100
-        taux_croissance = st.slider("Croissance annuelle dividende (%)", 0, 10, 3) / 100
-        dividende_annuel = st.number_input("Dernier dividende annuel (FCFA)", min_value=0, value=600)
-
-    with col2:
-        # Paramètres techniques
-        st.markdown("### Règles de trading")
-        marge_achat = st.slider("Marge de sécurité à l'achat (%)", 0, 50, 20) / 100
-        marge_vente = st.slider("Prime de sortie (%)", 0, 50, 10) / 100
-        stop_loss = st.slider("Stop Loss (%)", 1, 20, 10) / 100
-        take_profit = st.slider("Take Profit (%)", 5, 50, 20) / 100  # Nouveau paramètre Take Profit
-
-    # Paramètres spécifiques à la BRVM
-    st.subheader("Paramètres spécifiques à la BRVM")
-    col1, col2 = st.columns(2)
-    with col1:
-        # Plafond de variation journalière
-        plafond_variation = st.slider("Plafond de variation journalière (%)", 5, 15, 10) / 100
-    with col2:
-        # Délai de livraison
-        delai_livraison = st.slider("Délai de livraison (jours ouvrés)", 1, 5, 3)
-
-    # Calcul des moyennes mobiles
-    st.subheader("Analyse technique")
-    window_court = st.slider("Fenêtre de la moyenne mobile courte", 5, 50, 20)
-    window_long = st.slider("Fenêtre de la moyenne mobile longue", 20, 200, 50)
-
-    # Calcul des moyennes mobiles
-    data['MM_Court'] = data['Prix'].rolling(window=window_court).mean()
-    data['MM_Long'] = data['Prix'].rolling(window=window_long).mean()
-
-    # Affichage du graphique avec moyennes mobiles
-    fig2, ax2 = plt.subplots(figsize=(12, 6))
-    ax2.plot(data.index, data['Prix'], label='Prix', linewidth=1.5)
-    ax2.plot(data.index, data['MM_Court'], label=f'MM {window_court} jours', linewidth=1.5)
-    ax2.plot(data.index, data['MM_Long'], label=f'MM {window_long} jours', linewidth=1.5)
-    ax2.set_title('Analyse technique - Moyennes Mobiles')
-    ax2.set_xlabel('Date')
-    ax2.set_ylabel('Prix (FCFA)')
-    ax2.grid(True, alpha=0.3)
-    ax2.legend()
-    ax2.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
-    ax2.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    st.pyplot(fig2)
-
-    # Calcul de la valeur intrinsèque avec le modèle de Gordon
-    D1 = dividende_annuel * (1 + taux_croissance)
-    val_intrinseque = D1 / (rendement_exige - taux_croissance)
-    st.markdown(f"### Valeur intrinsèque calculée: **{val_intrinseque:.2f} FCFA**")
-
-    # Calcul des signaux d'achat/vente
-    data['val_intrinseque'] = val_intrinseque
-    data['prix_achat'] = (1 - marge_achat) * val_intrinseque
-    data['prix_vente'] = (1 + marge_vente) * val_intrinseque
-
-    # Signal technique: croisement des moyennes mobiles
-    data['signal_technique'] = 0
-    data.loc[data['MM_Court'] > data['MM_Long'], 'signal_technique'] = 1
-    data.loc[data['MM_Court'] < data['MM_Long'], 'signal_technique'] = -1
-
-    # Combinaison des signaux fondamentaux et techniques
-    data['achat'] = (data['Prix'] < data['prix_achat']) & (data['signal_technique'] == 1)
-    data['vente'] = (data['Prix'] > data['prix_vente']) | (data['signal_technique'] == -1)
-
-    # Affichage du graphique avec zones d'achat/vente
-    fig3, ax3 = plt.subplots(figsize=(12, 6))
-    ax3.plot(data.index, data['Prix'], label='Prix', linewidth=1.5)
-    ax3.axhline(y=val_intrinseque, color='g', linestyle='-', alpha=0.5, label='Valeur intrinsèque')
-    ax3.axhline(y=data['prix_achat'][0], color='g', linestyle='--', alpha=0.5, label='Prix d\\'achat')
-    ax3.axhline(y=data['prix_vente'][0], color='r', linestyle='--', alpha=0.5, label='Prix de vente')
-
-    # Marquage des signaux d'achat/vente
-    achats = data[data['achat'] == True]
-    ventes = data[data['vente'] == True]
-
-    if not achats.empty:
-        ax3.scatter(achats.index, achats['Prix'], color='g', s=50, marker='^', label='Signal d\\'achat')
-
-    if not ventes.empty:
-        ax3.scatter(ventes.index, ventes['Prix'], color='r', s=50, marker='v', label='Signal de vente')
-
-    ax3.set_title('Signaux d\\'achat et de vente')
-    ax3.set_xlabel('Date')
-    ax3.set_ylabel('Prix (FCFA)')
-    ax3.grid(True, alpha=0.3)
-    ax3.legend()
-    ax3.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
-    ax3.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    st.pyplot(fig3)
-
-    # Backtest
-    st.subheader("Backtest de la stratégie")
-
-    capital_initial = st.number_input("Capital initial (FCFA)", 100000, 10000000, 1000000, step=100000)
-    frais_transaction = st.slider("Frais de transaction (%)", 0.0, 2.0, 0.5) / 100
-
-    # Fonction pour exécuter le backtest avec Take Profit
-    def run_backtest(data, capital_initial, frais_transaction, stop_loss, take_profit, plafond_variation, delai_livraison):
-        capital = capital_initial
-        positions = []
-        achats_dates = []
-        ventes_dates = []
-        prix_achats = []
-        prix_ventes = []
-        portefeuille_valeur = []
-
-        # On utilise un DataFrame pour suivre l'évolution du portefeuille
-        portfolio = pd.DataFrame(index=data.index)
-        portfolio['prix'] = data['Prix']
-        portfolio['actions'] = 0
-        portfolio['actions_en_attente'] = 0
-        portfolio['date_livraison'] = None
-        portfolio['cash'] = capital_initial
-        portfolio['cash_reserve'] = 0  # Cash réservé pour les transactions en attente
-        portfolio['valeur_actions'] = 0
-        portfolio['valeur_totale'] = capital_initial
-        portfolio['rendement'] = 0
-
-        for i in range(1, len(data)):
-            jour = data.index[i]
-            jour_prec = data.index[i-1]
-            prix = data['Prix'].iloc[i]
-            prix_prec = data['Prix'].iloc[i-1]
-
-            # Vérification du plafond de variation
-            variation = (prix - prix_prec) / prix_prec
-            if abs(variation) > plafond_variation:
-                # Ajuster le prix en fonction du plafond
-                if variation > 0:
-                    prix = prix_prec * (1 + plafond_variation)
-                else:
-                    prix = prix_prec * (1 - plafond_variation)
-
-            # Initialisation pour ce jour
-            actions = portfolio.loc[jour_prec, 'actions']
-            actions_en_attente = portfolio.loc[jour_prec, 'actions_en_attente']
-            date_livraison = portfolio.loc[jour_prec, 'date_livraison']
-            cash = portfolio.loc[jour_prec, 'cash']
-            cash_reserve = portfolio.loc[jour_prec, 'cash_reserve']
-
-            # Vérification des livraisons d'actions
-            if date_livraison is not None and jour >= date_livraison:
-                actions += actions_en_attente
-                actions_en_attente = 0
-                date_livraison = None
-                # Libérer le cash réservé pour les ventes
-                if actions_en_attente < 0:
-                    cash += cash_reserve
-                    cash_reserve = 0
-
-            # Vérification du stop loss et take profit pour les positions existantes
-            if actions > 0:
-                prix_achat_moyen = sum(prix_achats) / len(prix_achats) if prix_achats else 0
-
-                # Condition de stop loss
-                if prix < (1 - stop_loss) * prix_achat_moyen:
-                    # Vente forcée (stop loss) - toujours soumise au délai
-                    vente_montant = actions * prix * (1 - frais_transaction)
-                    cash_reserve += vente_montant
-                    ventes_dates.append(jour)
-                    prix_ventes.append(prix)
-                    # Ajouter le délai de livraison
-                    date_livraison = jour + timedelta(days=delai_livraison)
-                    actions_en_attente = -actions  # Valeur négative pour indiquer une vente
-                    actions = 0
-                    prix_achats = []
-                    st.write(f"Stop Loss déclenché le {jour.date()} à {prix:.2f} FCFA")
-
-                # Condition de take profit
-                elif prix > (1 + take_profit) * prix_achat_moyen:
-                    # Vente forcée (take profit) - toujours soumise au délai
-                    vente_montant = actions * prix * (1 - frais_transaction)
-                    cash_reserve += vente_montant
-                    ventes_dates.append(jour)
-                    prix_ventes.append(prix)
-                    # Ajouter le délai de livraison
-                    date_livraison = jour + timedelta(days=delai_livraison)
-                    actions_en_attente = -actions  # Valeur négative pour indiquer une vente
-                    actions = 0
-                    prix_achats = []
-                    st.write(f"Take Profit déclenché le {jour.date()} à {prix:.2f} FCFA")
-
-            # Signal d'achat
-            if data['achat'].iloc[i] and cash > 0:
-                # Calcul du nombre d'actions à acheter (maximum possible avec le cash disponible)
-                max_actions = int(cash / (prix * (1 + frais_transaction)))
-                if max_actions > 0:
-                    # Achat
-                    cout_achat = max_actions * prix * (1 + frais_transaction)
-                    cash -= cout_achat  # Réserver le cash immédiatement
-                    cash_reserve -= cout_achat  # Montant bloqué pour l'achat
-                    actions_en_attente = max_actions
-                    date_livraison = jour + timedelta(days=delai_livraison)
-                    achats_dates.append(jour)
-                    prix_achats.append(prix)
-
-            # Signal de vente
-            elif data['vente'].iloc[i] and actions > 0:
-                # Vente
-                vente_montant = actions * prix * (1 - frais_transaction)
-                cash_reserve += vente_montant  # Le cash sera disponible après le délai
-                ventes_dates.append(jour)
-                prix_ventes.append(prix)
-                date_livraison = jour + timedelta(days=delai_livraison)
-                actions_en_attente = -actions  # Valeur négative pour indiquer une vente
-                actions = 0
-                prix_achats = []
-
-            # Mise à jour du portfolio pour ce jour
-            portfolio.loc[jour, 'actions'] = actions
-            portfolio.loc[jour, 'actions_en_attente'] = actions_en_attente
-            portfolio.loc[jour, 'date_livraison'] = date_livraison
-            portfolio.loc[jour, 'cash'] = cash
-            portfolio.loc[jour, 'cash_reserve'] = cash_reserve
-            portfolio.loc[jour, 'valeur_actions'] = actions * prix
-            portfolio.loc[jour, 'valeur_totale'] = cash + cash_reserve + (actions * prix)
-
-            # Calcul du rendement quotidien
-            if i > 0:
-                rendement_jour = (portfolio.loc[jour, 'valeur_totale'] / portfolio.loc[jour_prec, 'valeur_totale']) - 1
-                portfolio.loc[jour, 'rendement'] = rendement_jour
-
-        # Calcul des rendements cumulés
-        portfolio['rendement_cumule'] = (1 + portfolio['rendement']).cumprod() - 1
-
-        return portfolio, achats_dates, ventes_dates
-
-    # Exécution du backtest avec le paramètre take_profit
-    portfolio, achats_dates, ventes_dates = run_backtest(data, capital_initial, frais_transaction, stop_loss, take_profit, plafond_variation, delai_livraison)
-
-    # Affichage des résultats du backtest
-    st.subheader("Résultats du backtest")
-
-    # Statistiques de performance
-    rendement_total = (portfolio['valeur_totale'].iloc[-1] / capital_initial - 1) * 100
-    rendement_annualise = ((1 + rendement_total/100) ** (365 / (portfolio.index[-1] - portfolio.index[0]).days) - 1) * 100
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Rendement total", f"{rendement_total:.2f}%")
-    col2.metric("Rendement annualisé", f"{rendement_annualise:.2f}%")
-    col3.metric("Valeur finale du portefeuille", f"{portfolio['valeur_totale'].iloc[-1]:,.2f} FCFA")
-
-    # Graphique de l'évolution du portefeuille
-    fig4, ax4 = plt.subplots(figsize=(12, 6))
-    ax4.plot(portfolio.index, portfolio['valeur_totale'], linewidth=2, label='Valeur du portefeuille')
-    ax4.plot(portfolio.index, [capital_initial] * len(portfolio), '--', linewidth=1, color='gray', label='Capital initial')
-
-    # Marquage des achats et ventes sur le graphique
-    for date in achats_dates:
-        ax4.axvline(x=date, color='g', linestyle='--', alpha=0.3)
-    for date in ventes_dates:
-        ax4.axvline(x=date, color='r', linestyle='--', alpha=0.3)
-
-    ax4.set_title('Évolution de la valeur du portefeuille')
-    ax4.set_xlabel('Date')
-    ax4.set_ylabel('Valeur (FCFA)')
-    ax4.grid(True, alpha=0.3)
-    ax4.legend()
-    ax4.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
-    ax4.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    st.pyplot(fig4)
-
-    # Composition du portefeuille final
-    st.subheader("Composition du portefeuille final")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Nombre d'actions", f"{portfolio['actions'].iloc[-1]}")
-    col2.metric("Actions en attente", f"{portfolio['actions_en_attente'].iloc[-1]}")
-    col3.metric("Liquidités", f"{portfolio['cash'].iloc[-1]:,.2f} FCFA")
-
-    # Affichage des transactions
-    st.subheader("Journal des transactions")
-    if achats_dates or ventes_dates:
-        # Créer un DataFrame pour les transactions
-        transactions = []
-        for date in achats_dates:
-            prix = data.loc[date, 'Prix']
-            date_livraison = date + timedelta(days=delai_livraison)
-            transactions.append({
-                'Date Ordre': date,
-                'Date Livraison': date_livraison,
-                'Type': 'Achat',
-                'Prix': prix,
-                'Montant': prix
+        st.error(f"Erreur critique: {str(e)}")
+        st.stop()
+
+# ---- Calculs financiers optimisés ----
+@nb.jit(nopython=True)
+def calculate_metrics_numba(returns):
+    cumulative = np.empty_like(returns)
+    cumulative[0] = 1
+    for i in range(1, len(returns)):
+        cumulative[i] = cumulative[i-1] * (1 + returns[i])
+    return cumulative
+
+def calculate_performance(df):
+    df['cumulative'] = calculate_metrics_numba(df['returns'].values)
+    df['drawdown'] = df['cumulative'] / df['cumulative'].cummax() - 1
+    return df
+
+# ---- Moteur de backtest ----
+class BacktestEngine:
+    def __init__(self, data, initial_capital=1e6, fees=0.001):
+        self.data = data
+        self.initial_capital = initial_capital
+        self.fees = fees
+        self.posiciones = []
+        self.history = []
+    
+    def add_strategy(self, strategy):
+        self.strategy = strategy
+    
+    def run(self):
+        capital = self.initial_capital
+        position = 0
+        prev_signal = 0
+        
+        for idx, row in self.data.iterrows():
+            signal = self.strategy.generate_signal(row)
+            
+            if signal != prev_signal:
+                # Exécution avec délai BRVM
+                execution_price = self.calculate_execution_price(row)
+                trade_cost = abs(signal - position) * execution_price * self.fees
+                
+                if signal > position:  # Achat
+                    capital -= (signal - position) * execution_price + trade_cost
+                else:  # Vente
+                    capital += (position - signal) * execution_price - trade_cost
+                
+                position = signal
+            
+            portfolio_value = capital + position * row['close']
+            self.history.append({
+                'date': idx,
+                'value': portfolio_value,
+                'position': position,
+                'returns': (portfolio_value / self.initial_capital) - 1
             })
+            prev_signal = signal
+        
+        return pd.DataFrame(self.history).set_index('date')
 
-        for date in ventes_dates:
-            prix = data.loc[date, 'Prix']
-            date_livraison = date + timedelta(days=delai_livraison)
-            transactions.append({
-                'Date Ordre': date,
-                'Date Livraison': date_livraison,
-                'Type': 'Vente',
-                'Prix': prix,
-                'Montant': prix
-            })
+    def calculate_execution_price(self, row):
+        # Simulation de l'impact de marché
+        spread = row['high'] - row['low']
+        return row['close'] + spread * 0.1 * np.random.randn()
 
-        transactions_df = pd.DataFrame(transactions)
-        if not transactions_df.empty:
-            transactions_df = transactions_df.sort_values('Date Ordre')
-            st.dataframe(transactions_df)
-        else:
-            st.info("Aucune transaction n'a été effectuée pendant la période analysée.")
+# ---- Visualisations interactives ----
+def plot_performance(backtest_result, benchmark):
+    fig = go.Figure()
+    
+    # Stratégie
+    fig.add_trace(go.Scatter(
+        x=backtest_result.index,
+        y=backtest_result['value'],
+        name='Stratégie',
+        line=dict(color='#1f77b4', width=2)
+    ))
+    
+    # Benchmark
+    fig.add_trace(go.Scatter(
+        x=benchmark.index,
+        y=benchmark['close'] / benchmark['close'].iloc[0] * backtest_result['value'].iloc[0],
+        name='Benchmark',
+        line=dict(color='#ff7f0e', dash='dot')
+    ))
+    
+    # Drawdown
+    fig.add_trace(go.Scatter(
+        x=backtest_result.index,
+        y=backtest_result['drawdown'],
+        name='Drawdown',
+        yaxis='y2',
+        fill='tozeroy',
+        line=dict(color='#d62728', width=0.5)
+    ))
+    
+    fig.update_layout(
+        title='Performance du Portefeuille',
+        yaxis=dict(title='Valeur du Portefeuille'),
+        yaxis2=dict(title='Drawdown', overlaying='y', side='right'),
+        hovermode='x unified',
+        template='plotly_white'
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
-    else:
-        st.info("Aucune transaction n'a été effectuée pendant la période analysée.")
+# ---- Rapport détaillé ----
+def generate_report(results):
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer) as writer:
+        results.to_excel(writer, sheet_name='Résultats')
+    return buffer.getvalue()
 
-    # Métriques avancées
-    st.subheader("Métriques avancées")
+# ---- Flux principal ----
+if uploaded_file:
+    try:
+        with st.spinner("Analyse des données en cours..."):
+            data = process_data(uploaded_file)
+            benchmark = data.copy()
+        
+        # Configuration du backtest
+        with st.expander("⚙️ Paramètres avancés", expanded=True):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                initial_capital = st.number_input("Capital Initial (FCFA)", 1e6, 1e9, 1e6)
+                stop_loss = st.slider("Stop Loss (%)", 0.0, 20.0, 10.0) / 100
+            with col2:
+                transaction_fees = st.slider("Frais de Transaction (%)", 0.0, 2.0, 0.5) / 100
+                take_profit = st.slider("Take Profit (%)", 0.0, 50.0, 20.0) / 100
+            with col3:
+                delivery_days = st.slider("Délai Livraison (jours)", 1, 5, 3)
+                risk_free = st.number_input("Taux Sans Risque (%)", 0.0, 15.0, 3.0) / 100
+        
+        # Exécution du backtest
+        engine = BacktestEngine(data, initial_capital, transaction_fees)
+        engine.add_strategy(YourCustomStrategy())  # À implémenter
+        results = engine.run()
+        results = calculate_performance(results)
+        
+        # Affichage des résultats
+        st.subheader("📊 Analyse de Performance")
+        plot_performance(results, benchmark)
+        
+        # Métriques de performance
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Rendement Total", f"{results['returns'].iloc[-1]*100:.2f}%")
+        col2.metric("Volatilité Annuelle", f"{results['returns'].std()*np.sqrt(252)*100:.2f}%")
+        col3.metric("Ratio de Sharpe", f"{(results['returns'].mean()*252 - risk_free)/results['returns'].std()/np.sqrt(252):.2f}")
+        col4.metric("Max Drawdown", f"{results['drawdown'].min()*100:.2f}%")
+        
+        # Téléchargement du rapport
+        st.download_button(
+            label="📥 Télécharger Rapport Complet",
+            data=generate_report(results),
+            file_name="rapport_backtest.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    
+    except Exception as e:
+        st.error(f"Erreur lors de l'exécution: {str(e)}")
+        st.stop()
 
-    # Calcul des rendements journaliers du marché
-    data['rendement_marche'] = data['Prix'].pct_change()
+else:
+    st.info("Veuillez téléverser un fichier CSV pour commencer l'analyse.")
 
-    # Calcul de la volatilité
-    volatilite_strat = portfolio['rendement'].std() * (252 ** 0.5) * 100  # Annualisée
-    volatilite_marche = data['rendement_marche'].std() * (252 ** 0.5) * 100  # Annualisée
+# ---- Documentation ----
+with st.expander("📚 Documentation des stratégies"):
+    st.markdown("""
+    ### Modèles Implémentés
+    **1. Stratégie Buy & Hold**  
+    Investissement initial avec maintien de la position jusqu'à la fin de la période.
 
-    # Calcul du ratio de Sharpe (en supposant un taux sans risque de 3%)
-    taux_sans_risque = 0.03
-    sharpe_ratio = (rendement_annualise/100 - taux_sans_risque) / (volatilite_strat/100) if volatilite_strat != 0 else 0
+    **2. Croisement de Moyennes Mobiles**  
+    - Achat quand MM courte > MM longue  
+    - Vente quand MM courte < MM longue
 
-    # Calcul du drawdown
-    portfolio['peak'] = portfolio['valeur_totale'].cummax()
-    portfolio['drawdown'] = (portfolio['valeur_totale'] - portfolio['peak']) / portfolio['peak'] * 100
-    max_drawdown = portfolio['drawdown'].min()
+    **3. Stratégie RSI**  
+    - Surchat (RSI > 70) ⇒ Vente  
+    - Survente (RSI < 30) ⇒ Achat
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Volatilité annualisée", f"{volatilite_strat:.2f}%")
-    col2.metric("Ratio de Sharpe", f"{sharpe_ratio:.2f}")
-    col3.metric("Drawdown maximum", f"{max_drawdown:.2f}%")
-
-    # Graphique du drawdown
-    fig5, ax5 = plt.subplots(figsize=(12, 4))
-    ax5.fill_between(portfolio.index, portfolio['drawdown'], 0, color='red', alpha=0.3)
-    ax5.set_title('Drawdown du portefeuille')
-    ax5.set_xlabel('Date')
-    ax5.set_ylabel('Drawdown (%)')
-    ax5.grid(True, alpha=0.3)
-    ax5.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
-    ax5.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    st.pyplot(fig5)
-
-    # Graphique de la distribution des rendements
-    fig6, ax6 = plt.subplots(figsize=(12, 4))
-    ax6.hist(portfolio['rendement'] * 100, bins=50, alpha=0.7)
-    ax6.set_title('Distribution des rendements journaliers')
-    ax6.set_xlabel('Rendement (%)')
-    ax6.set_ylabel('Fréquence')
-    ax6.grid(True, alpha=0.3)
-    plt.tight_layout()
-    st.pyplot(fig6)
-
-    # Comparer la stratégie à un buy & hold simple
-    st.subheader("Comparaison avec Buy & Hold")
-
-    # Calcul du rendement buy & hold
-    prix_initial = data['Prix'].iloc[0]
-    prix_final = data['Prix'].iloc[-1]
-    rendement_buy_hold = (prix_final / prix_initial - 1) * 100
-    rendement_buy_hold_annualise = ((1 + rendement_buy_hold/100) ** (365 / (portfolio.index[-1] - portfolio.index[0]).days) - 1) * 100
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Rendement Buy & Hold", f"{rendement_buy_hold:.2f}%")
-    col2.metric("Rendement annualisé Buy & Hold", f"{rendement_buy_hold_annualise:.2f}%")
-    col3.metric("Surperformance", f"{rendement_total - rendement_buy_hold:.2f}%")
-
-    # Graphique comparatif des performances
-    fig7, ax7 = plt.subplots(figsize=(12, 6))
-    # Créer un indice de performance pour la stratégie et le buy & hold
-    perf_strategie = (1 + portfolio['rendement_cumule'])
-    perf_buy_hold = data['Prix'] / data['Prix'].iloc[0]
-
-    ax7.plot(data.index, perf_strategie, label='Stratégie', linewidth=2)
-    ax7.plot(data.index, perf_buy_hold, label='Buy & Hold', linewidth=2, linestyle='--')
-    ax7.set_title('Comparaison des performances - Stratégie vs Buy & Hold')
-    ax7.set_xlabel('Date')
-    ax7.set_ylabel('Performance (base 1)')
-    ax7.grid(True, alpha=0.3)
-    ax7.legend()
-    ax7.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
-    ax7.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    st.pyplot(fig7)
-
-    # Téléchargement du rapport
-    st.markdown(get_csv_download_link(portfolio), unsafe_allow_html=True)
-
-```
+    ### Paramètres BRVM
+    - **Plage horaire:** 9h00 - 15h00 UTC  
+    - **Taille des lots:** Multiples de 100  
+    - **Variation maximale:** ±10% journalier
+    """)
