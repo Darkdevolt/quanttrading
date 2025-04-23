@@ -132,12 +132,12 @@ def run_backtest(data, capital, params):
                 buy_prices = []  # Reset après vente
         
         # Condition d'entrée
-        entry_cond = 
+        entry_cond = (
             (data['Signal'].iloc[i] == 1) and  # Signal technique
             (cash > 0) and 
             (shares == 0) and 
             (pending == 0)
-        
+        )
         if entry_cond:
             max_shares = int(cash / (price * (1 + params['fees'])))
             if max_shares > 0:
