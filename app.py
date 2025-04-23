@@ -201,7 +201,6 @@ if uploaded_file is not None:
             st.markdown("### Analyse fondamentale")
             rendement_exige = st.slider("Taux d'actualisation (%)", 5, 20, 12) / 100
             taux_croissance = st.slider("Croissance annuelle dividende (%)", 0, 10, 3) / 100
-            # Retrait de la limitation à 1000 FCFA
             dividende_annuel = st.number_input("Dernier dividende annuel (FCFA)", min_value=0, value=600)
         
         with col2:
@@ -210,6 +209,7 @@ if uploaded_file is not None:
             marge_achat = st.slider("Marge de sécurité à l'achat (%)", 0, 50, 20) / 100
             marge_vente = st.slider("Prime de sortie (%)", 0, 50, 10) / 100
             stop_loss = st.slider("Stop Loss (%)", 1, 20, 10) / 100
+            take_profit = st.slider("Take Profit (%)", 5, 50, 20) / 100  # Nouveau paramètre Take Profit
         
         # Paramètres spécifiques à la BRVM
         st.subheader("Paramètres spécifiques à la BRVM")
@@ -299,8 +299,8 @@ if uploaded_file is not None:
         capital_initial = st.number_input("Capital initial (FCFA)", 100000, 10000000, 1000000, step=100000)
         frais_transaction = st.slider("Frais de transaction (%)", 0.0, 2.0, 0.5) / 100
         
-        # Fonction pour exécuter le backtest
-        def run_backtest(data, capital_initial, frais_transaction, stop_loss, plafond_variation, delai_livraison):
+        # Fonction pour exécuter le backtest avec Take Profit
+        def run_backtest(data, capital_initial, frais_transaction, stop_loss, take_profit, plafond_variation, delai_livraison):
             capital = capital_initial
             positions = []
             achats_dates = []
@@ -348,10 +348,16 @@ if uploaded_file is not None:
                     actions += actions_en_attente
                     actions_en_attente = 0
                     date_livraison = None
+                    # Libérer le cash réservé pour les ventes
+                    if actions_en_attente < 0:
+                        cash += cash_reserve
+                        cash_reserve = 0
                 
-                # Vérification du stop loss pour les positions existantes
+                # Vérification du stop loss et take profit pour les positions existantes
                 if actions > 0:
                     prix_achat_moyen = sum(prix_achats) / len(prix_achats) if prix_achats else 0
+                    
+                    # Condition de stop loss
                     if prix < (1 - stop_loss) * prix_achat_moyen:
                         # Vente forcée (stop loss) - toujours soumise au délai
                         vente_montant = actions * prix * (1 - frais_transaction)
@@ -363,6 +369,21 @@ if uploaded_file is not None:
                         actions_en_attente = -actions  # Valeur négative pour indiquer une vente
                         actions = 0
                         prix_achats = []
+                        st.write(f"Stop Loss déclenché le {jour.date()} à {prix:.2f} FCFA")
+                    
+                    # Condition de take profit
+                    elif prix > (1 + take_profit) * prix_achat_moyen:
+                        # Vente forcée (take profit) - toujours soumise au délai
+                        vente_montant = actions * prix * (1 - frais_transaction)
+                        cash_reserve += vente_montant
+                        ventes_dates.append(jour)
+                        prix_ventes.append(prix)
+                        # Ajouter le délai de livraison
+                        date_livraison = jour + timedelta(days=delai_livraison)
+                        actions_en_attente = -actions  # Valeur négative pour indiquer une vente
+                        actions = 0
+                        prix_achats = []
+                        st.write(f"Take Profit déclenché le {jour.date()} à {prix:.2f} FCFA")
                 
                 # Signal d'achat
                 if data['achat'].iloc[i] and cash > 0:
@@ -409,8 +430,8 @@ if uploaded_file is not None:
             
             return portfolio, achats_dates, ventes_dates
         
-        # Exécution du backtest
-        portfolio, achats_dates, ventes_dates = run_backtest(data, capital_initial, frais_transaction, stop_loss, plafond_variation, delai_livraison)
+        # Exécution du backtest avec le paramètre take_profit
+        portfolio, achats_dates, ventes_dates = run_backtest(data, capital_initial, frais_transaction, stop_loss, take_profit, plafond_variation, delai_livraison)
         
         # Affichage des résultats du backtest
         st.subheader("Résultats du backtest")
@@ -560,3 +581,15 @@ if uploaded_file is not None:
         ax7.plot(data.index, perf_strategie, label='Stratégie', linewidth=2)
         ax7.plot(data.index, perf_buy_hold, label='Buy & Hold', linewidth=2, linestyle='--')
         ax7.set_title('Comparaison des performances - Stratégie vs Buy & Hold')
+        ax7.set_xlabel('Date')
+        ax7.set_ylabel('Performance (base 1)')
+        ax7.grid(True, alpha=0.3)
+        ax7.legend()
+        ax7.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
+        ax7.xaxis.set_major_locator(mdates.MonthLocator(interval=3))
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        st.pyplot(fig7)
+        
+        # Téléchargement du rapport
+        st.markdown(get_csv_download_link(portfolio), unsafe_allow_html=True)
