@@ -559,5 +559,3 @@ if uploaded_file is not None:
         
         ax7.plot(data.index, perf_strategie, label='Stratégie', linewidth=2)
         ax7.plot(data.index, perf_buy_hold, label='Buy & Hold', linewidth=2, linestyle='--')
-        ax7.set_title('
-        
