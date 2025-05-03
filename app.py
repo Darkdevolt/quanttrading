@@ -970,16 +970,15 @@ if 'data' in st.session_state and not st.session_state.data.empty:
         help="Taux de rendement annuel d'un placement sans risque (ex: bons du trésor), utilisé pour calculer le ratio de Sharpe."
     )
     taux_sans_risque_annuel = taux_sans_risque_pct / 100.0
-
-    invest_percentage_pct = st.sidebar.slider(
-        "Investir (%) du cash dispo par trade", min_value=10, max_value=100,
-        value=st.session_state.invest_percentage, # Utilise la clé 'invest_percentage'
-        step=5, key="invest_percentage", # Clé unique
-        format="%d%%",
-        help="Pourcentage du capital disponible à investir lors de chaque signal d'achat. Le montant investi inclut les frais de transaction estimés."
-    )
-    invest_percentage = invest_percentage_pct / 100.0
-
+# --- Paramètre d'investissement ---
+invest_percentage_pct = st.sidebar.slider(
+    "Pourcentage à investir (%)",
+    min_value=0,
+    max_value=100,
+    value=int(st.session_state.get('invest_percentage', 100)),
+    step=1
+)
+st.session_state['invest_percentage'] = invest_percentage_pct
 
     # --- Calculs Techniques et Signaux ---
     st.subheader("Analyse Technique et Signaux")
