@@ -21,7 +21,7 @@ st.set_page_config(
         'Report a bug': "https://www.example.com/bug", # Mettez votre lien de bug
         'About': """
         ## BRVM Quant Backtest App
-        **Version:** 1.7.0 (Correction Erreurs + Logique Backtest)
+        **Version:** 1.7.1 (Correction Type Error number_input)
 
         Cette application permet d'analyser et de backtester des stratégies d'investissement
         sur les actions cotées à la Bourse Régionale des Valeurs Mobilières (BRVM)
@@ -68,7 +68,7 @@ default_values = {
     'trailing_stop_pct': 5.0,
     'variation_cap': 7.5,
     'settlement_days': 3,
-    'initial_capital': 1000000.0,
+    'initial_capital': 1000000, # MODIFIED: Changed to integer
     'commission_rate': 0.5,
     'risk_free_rate': 3.0,
     'invest_percentage': 100.0
@@ -934,12 +934,25 @@ if 'data' in st.session_state and not st.session_state.data.empty:
 
     # --- Paramètres du Backtest ---
     st.sidebar.subheader("5. Paramètres du Backtest")
+    # Ensure value is compatible with min/max/step types
+    capital_initial_value = st.session_state.initial_capital
+    # Try converting to int if format is %d, otherwise keep as is (likely float)
+    try:
+        if "%d" in "%d": # Check if format string expects integer
+            capital_initial_value = int(capital_initial_value)
+    except (ValueError, TypeError):
+         pass # Keep original type if conversion fails
+
     capital_initial = st.sidebar.number_input(
-        "Capital initial (FCFA)", min_value=10000, max_value=1000000000, # Plage ajustée
-        value=st.session_state.initial_capital, # Utilise la clé 'initial_capital'
-        step=10000, key="initial_capital", # Clé unique
-        format="%d"
+        "Capital initial (FCFA)",
+        min_value=10000,          # Integer
+        max_value=1000000000,     # Integer
+        value=capital_initial_value, # Use potentially converted value
+        step=10000,               # Integer
+        key="initial_capital",    # Clé unique
+        format="%d"               # Format as integer
     )
+
     frais_transaction_pct = st.sidebar.slider(
         "Frais de transaction (%) par ordre", min_value=0.0, max_value=5.0,
         value=st.session_state.commission_rate, # Utilise la clé 'commission_rate'
@@ -1213,68 +1226,76 @@ if 'data' in st.session_state and not st.session_state.data.empty:
         with st.spinner("Exécution du backtest en cours..."):
             try:
                 # --- Initialisation du Backtest ---
-                cash = capital_initial
+                cash = float(capital_initial) # Assurer que cash est un float pour les calculs
                 position = 0 # Nombre d'actions détenues
-                portfolio_value = capital_initial
-                last_buy_price = 0
-                peak_portfolio_value_since_buy = 0 # Pour le trailing stop
+                portfolio_value = cash
+                last_buy_price = 0.0
+                peak_portfolio_value_since_buy = 0.0 # Pour le trailing stop (utiliser le PRIX ici, pas la valeur)
                 trades = [] # Liste pour enregistrer les transactions
                 portfolio_history = pd.DataFrame(index=analysis_data.index, columns=['Cash', 'Position', 'Position Value', 'Total Value'])
 
                 # --- Boucle de Backtesting ---
                 for i in range(len(analysis_data)):
                     current_date = analysis_data.index[i]
-                    current_price = analysis_data['Prix'].iloc[i]
-                    current_open_price = analysis_data['Ouverture'].iloc[i] # Utiliser l'ouverture pour l'exécution? Ou la clôture? Clôture ici.
-                    current_high_price = analysis_data['Plus_Haut'].iloc[i]
-                    current_low_price = analysis_data['Plus_Bas'].iloc[i]
+                    # Utiliser .loc pour éviter les problèmes potentiels avec iloc et les index Datetime
+                    current_price = analysis_data.loc[current_date, 'Prix']
+                    current_open_price = analysis_data.loc[current_date, 'Ouverture']
+                    current_high_price = analysis_data.loc[current_date, 'Plus_Haut']
+                    current_low_price = analysis_data.loc[current_date, 'Plus_Bas']
 
                     # Vérifier si les données sont valides pour ce jour
                     if pd.isna(current_price) or pd.isna(current_open_price) or pd.isna(current_high_price) or pd.isna(current_low_price):
                         # Si données invalides, on reporte la valeur du portefeuille du jour précédent
                         if i > 0:
-                            portfolio_history.iloc[i] = portfolio_history.iloc[i-1]
+                             previous_date = analysis_data.index[i-1]
+                             portfolio_history.loc[current_date] = portfolio_history.loc[previous_date]
                         else:
-                            portfolio_history.iloc[i] = [cash, position, 0, cash]
+                            portfolio_history.loc[current_date] = [cash, position, 0.0, cash]
                         continue # Passer au jour suivant
 
-                    # Initialiser la valeur du portefeuille pour aujourd'hui
-                    position_value = position * current_price
+                    # Initialiser la valeur du portefeuille pour aujourd'hui avant toute transaction
+                    position_value = float(position) * current_price
                     portfolio_value = cash + position_value
                     portfolio_history.loc[current_date, ['Cash', 'Position', 'Position Value', 'Total Value']] = [cash, position, position_value, portfolio_value]
 
                     # --- Logique de Vente (prioritaire sur l'achat pour éviter achat/vente le même jour) ---
                     sell_signal_triggered = False
                     sell_reason = ""
+                    execution_price = current_price # Prix par défaut si vente à la clôture
 
                     if position > 0: # On ne peut vendre que si on a une position
                         # 1. Vérifier Stop Loss
-                        stop_loss_price = last_buy_price * (1 - stop_loss)
+                        stop_loss_price = last_buy_price * (1.0 - stop_loss)
                         if current_low_price <= stop_loss_price: # Utiliser le plus bas du jour pour le stop loss
                             sell_signal_triggered = True
                             sell_reason = f"Stop Loss ({stop_loss_pct:.1f}%)"
-                            execution_price = stop_loss_price # On suppose l'exécution au seuil SL
+                            # Exécution au prix SL ou à l'ouverture si l'ouverture est déjà en dessous?
+                            # Simplification: exécution au prix SL.
+                            execution_price = stop_loss_price
 
                         # 2. Vérifier Trailing Stop Loss (si activé et pas déjà stoppé)
                         if use_trailing_stop and not sell_signal_triggered:
-                            # Mettre à jour le plus haut atteint depuis l'achat
-                            peak_portfolio_value_since_buy = max(peak_portfolio_value_since_buy, current_high_price)
-                            trailing_stop_price = peak_portfolio_value_since_buy * (1 - trailing_stop_loss_pct)
+                            # Mettre à jour le plus haut PRIX atteint depuis l'achat
+                            peak_price_since_buy = max(last_buy_price, current_high_price if peak_portfolio_value_since_buy == 0 else peak_portfolio_value_since_buy) # Utiliser peak_portfolio_value_since_buy pour stocker le peak_price
+                            peak_portfolio_value_since_buy = peak_price_since_buy # Stocker le peak price ici
+                            trailing_stop_price = peak_price_since_buy * (1.0 - trailing_stop_loss_pct)
                             if current_low_price <= trailing_stop_price:
                                 sell_signal_triggered = True
                                 sell_reason = f"Trailing Stop ({trailing_stop_loss_pct_val:.1f}%)"
-                                execution_price = trailing_stop_price # Exécution au seuil trailing
+                                # Exécution au prix TSL.
+                                execution_price = trailing_stop_price
 
                         # 3. Vérifier Take Profit (si pas déjà stoppé)
-                        take_profit_price = last_buy_price * (1 + take_profit)
+                        take_profit_price = last_buy_price * (1.0 + take_profit)
                         if not sell_signal_triggered and current_high_price >= take_profit_price: # Utiliser le plus haut pour TP
                             sell_signal_triggered = True
                             sell_reason = f"Take Profit ({take_profit_pct:.1f}%)"
-                            execution_price = take_profit_price # Exécution au seuil TP
+                            # Exécution au prix TP.
+                            execution_price = take_profit_price
 
-                        # 4. Vérifier Signal de Vente Fondamental (si activé et pas déjà stoppé)
-                        if use_fundamental_signals and not sell_signal_triggered:
-                            sell_vi_price = val_intrinseque * (1 + marge_vente)
+                        # 4. Vérifier Signal de Vente Fondamental (si activé, VI valide et pas déjà stoppé)
+                        if use_fundamental_signals and val_intrinseque is not None and not sell_signal_triggered:
+                            sell_vi_price = val_intrinseque * (1.0 + marge_vente)
                             if current_price > sell_vi_price: # Basé sur le prix de clôture pour VI
                                 sell_signal_triggered = True
                                 sell_reason = f"Valeur Intrinsèque (Prime {marge_vente_pct:.1f}%)"
@@ -1282,15 +1303,18 @@ if 'data' in st.session_state and not st.session_state.data.empty:
 
                         # 5. Vérifier Signal de Vente Technique (si activé et pas déjà stoppé)
                         if tech_signal_method_active and not sell_signal_triggered:
-                            if analysis_data['Signal_Technique_Combine'].iloc[i] == -1:
+                            if analysis_data.loc[current_date, 'Signal_Technique_Combine'] == -1:
                                 sell_signal_triggered = True
                                 sell_reason = f"Signal Technique ({technical_signal_method})"
                                 execution_price = current_price # Exécution à la clôture
 
                         # Exécuter la vente si un signal est déclenché
                         if sell_signal_triggered:
+                            # Assurer que le prix d'exécution n'est pas plus haut que le high ou plus bas que le low du jour
+                            execution_price = max(current_low_price, min(current_high_price, execution_price))
+
                             # Calculer le montant de la vente
-                            sell_value = position * execution_price
+                            sell_value = float(position) * execution_price
                             commission = sell_value * frais_transaction
                             cash += sell_value - commission
                             trade_info = {
@@ -1299,51 +1323,56 @@ if 'data' in st.session_state and not st.session_state.data.empty:
                                 'Cash Après': cash, 'Raison': sell_reason
                             }
                             trades.append(trade_info)
-                            st.write(f"Debug - Vente: {trade_info}") # Debug
+                            # st.write(f"Debug - Vente: {trade_info}") # Debug
                             position = 0
-                            last_buy_price = 0
-                            peak_portfolio_value_since_buy = 0
+                            last_buy_price = 0.0
+                            peak_portfolio_value_since_buy = 0.0 # Réinitialiser le peak price
                             # Mettre à jour la valeur du portefeuille après la vente pour ce jour
-                            position_value = 0
+                            position_value = 0.0
                             portfolio_value = cash
                             portfolio_history.loc[current_date, ['Cash', 'Position', 'Position Value', 'Total Value']] = [cash, position, position_value, portfolio_value]
 
 
                     # --- Logique d'Achat ---
-                    buy_signal_triggered = False
-                    buy_reason = ""
+                    # Ne pas acheter si une vente a eu lieu le même jour
+                    if position == 0 and not sell_signal_triggered:
+                        buy_signal_triggered = False
+                        buy_reason = ""
+                        execution_price = current_price # Achat à la clôture par défaut
 
-                    if position == 0: # On ne peut acheter que si on n'a pas de position
-                        # 1. Vérifier Signal d'Achat Fondamental (si activé)
-                        buy_vi_price = val_intrinseque * (1 - marge_achat) if use_fundamental_signals else -1 # -1 si désactivé
-                        fundamental_buy = use_fundamental_signals and current_price < buy_vi_price
+                        # 1. Vérifier Signal d'Achat Fondamental (si activé et VI valide)
+                        fundamental_buy = False
+                        if use_fundamental_signals and val_intrinseque is not None:
+                             buy_vi_price = val_intrinseque * (1.0 - marge_achat)
+                             if current_price < buy_vi_price:
+                                 fundamental_buy = True
 
                         # 2. Vérifier Signal d'Achat Technique (si activé)
-                        technical_buy = tech_signal_method_active and analysis_data['Signal_Technique_Combine'].iloc[i] == 1
+                        technical_buy = tech_signal_method_active and analysis_data.loc[current_date, 'Signal_Technique_Combine'] == 1
 
                         # Combiner les signaux d'achat (ici on suppose qu'on achète si l'un OU l'autre est vrai)
-                        # On pourrait ajouter une option pour ET
+                        # Modifier cette logique si une condition ET est souhaitée
                         if fundamental_buy or technical_buy:
                             buy_signal_triggered = True
                             reasons = []
                             if fundamental_buy: reasons.append(f"Valeur Intrinsèque (Marge {marge_achat_pct:.1f}%)")
                             if technical_buy: reasons.append(f"Signal Technique ({technical_signal_method})")
                             buy_reason = " & ".join(reasons)
-                            execution_price = current_price # Achat à la clôture
+                            # Utiliser le prix de clôture pour l'achat
+                            execution_price = current_price
 
                             # Exécuter l'achat si signal déclenché
                             # Calculer le montant à investir
                             amount_to_invest = cash * invest_percentage
                             # Estimer les frais pour calculer la quantité achetable
-                            # Qty * Price + Qty * Price * Fee <= Amount => Qty * Price * (1 + Fee) <= Amount
-                            # Qty <= Amount / (Price * (1 + Fee))
-                            if execution_price > 0 and (1 + frais_transaction) > 0:
-                                quantity_to_buy = int(amount_to_invest / (execution_price * (1 + frais_transaction)))
+                            # Qty * Price * (1 + Fee) <= Amount
+                            if execution_price > 0 and (1.0 + frais_transaction) > 0:
+                                quantity_to_buy = int(amount_to_invest / (execution_price * (1.0 + frais_transaction)))
                             else:
                                 quantity_to_buy = 0
 
                             if quantity_to_buy > 0:
-                                buy_value = quantity_to_buy * execution_price
+                                buy_value = float(quantity_to_buy) * execution_price
                                 commission = buy_value * frais_transaction
                                 total_cost = buy_value + commission
 
@@ -1351,7 +1380,7 @@ if 'data' in st.session_state and not st.session_state.data.empty:
                                     cash -= total_cost
                                     position = quantity_to_buy
                                     last_buy_price = execution_price
-                                    peak_portfolio_value_since_buy = execution_price # Initialiser le pic au prix d'achat
+                                    peak_portfolio_value_since_buy = execution_price # Initialiser le pic PRIX au prix d'achat
 
                                     trade_info = {
                                         'Date': current_date, 'Type': 'Achat', 'Prix': execution_price,
@@ -1359,23 +1388,26 @@ if 'data' in st.session_state and not st.session_state.data.empty:
                                         'Cash Après': cash, 'Raison': buy_reason
                                     }
                                     trades.append(trade_info)
-                                    st.write(f"Debug - Achat: {trade_info}") # Debug
+                                    # st.write(f"Debug - Achat: {trade_info}") # Debug
 
                                     # Mettre à jour la valeur du portefeuille après l'achat pour ce jour
-                                    position_value = position * current_price # Recalculer avec le prix actuel
+                                    position_value = float(position) * current_price # Recalculer avec le prix actuel
                                     portfolio_value = cash + position_value
                                     portfolio_history.loc[current_date, ['Cash', 'Position', 'Position Value', 'Total Value']] = [cash, position, position_value, portfolio_value]
-                                else:
-                                     st.write(f"Debug - Achat annulé {current_date}: Pas assez de cash ({cash:.2f}) pour acheter {quantity_to_buy} actions à {execution_price:.2f} (Coût total: {total_cost:.2f})") # Debug
-                            else:
-                                 st.write(f"Debug - Achat annulé {current_date}: Quantité à acheter nulle ou négative.") # Debug
+                                # else:
+                                     # st.write(f"Debug - Achat annulé {current_date}: Pas assez de cash ({cash:.2f}) pour acheter {quantity_to_buy} actions à {execution_price:.2f} (Coût total: {total_cost:.2f})") # Debug
+                            # else:
+                                 # st.write(f"Debug - Achat annulé {current_date}: Quantité à acheter nulle ou négative.") # Debug
 
 
                     # Mettre à jour la valeur du portefeuille à la fin de la journée (si aucun trade n'a eu lieu ce jour)
                     # Si un trade a eu lieu, la mise à jour a déjà été faite dans la section achat/vente
                     if not buy_signal_triggered and not sell_signal_triggered:
-                         position_value = position * current_price
+                         position_value = float(position) * current_price
                          portfolio_value = cash + position_value
+                         # S'assurer que la ligne existe avant d'assigner
+                         if current_date not in portfolio_history.index:
+                              portfolio_history.loc[current_date] = [np.nan] * len(portfolio_history.columns)
                          portfolio_history.loc[current_date, ['Cash', 'Position', 'Position Value', 'Total Value']] = [cash, position, position_value, portfolio_value]
 
 
@@ -1385,16 +1417,32 @@ if 'data' in st.session_state and not st.session_state.data.empty:
                 # --- Affichage des Résultats ---
                 st.markdown("### Résultats du Backtest")
 
+                # S'assurer que les types sont numériques avant les calculs
+                portfolio_history = portfolio_history.astype({
+                    'Cash': float, 'Position': float, # Position peut être float si on autorise fractions
+                    'Position Value': float, 'Total Value': float
+                })
+                portfolio_history.dropna(subset=['Total Value'], inplace=True) # Supprimer les lignes potentiellement vides
+
                 # 1. Historique du Portefeuille
                 st.markdown("#### Évolution de la Valeur du Portefeuille")
-                portfolio_history.dropna(subset=['Total Value'], inplace=True) # Supprimer les lignes potentiellement vides au début
 
-                if not portfolio_history.empty:
+                if not portfolio_history.empty and len(portfolio_history) > 1:
                     fig_portfolio, ax_portfolio = plt.subplots(figsize=(12, 6))
                     ax_portfolio.plot(portfolio_history.index, portfolio_history['Total Value'], label='Valeur Totale Portefeuille', color='green', linewidth=1.5)
-                    # Ajouter une ligne pour Buy & Hold
-                    buy_hold_value = (capital_initial / analysis_data['Prix'].iloc[0]) * analysis_data['Prix']
-                    ax_portfolio.plot(analysis_data.index, buy_hold_value, label='Stratégie Buy & Hold', color='grey', linestyle='--', linewidth=1)
+
+                    # Ajouter une ligne pour Buy & Hold (s'assurer que analysis_data a les mêmes dates)
+                    common_index = analysis_data.index.intersection(portfolio_history.index)
+                    if not common_index.empty:
+                         first_valid_price_date = analysis_data.loc[common_index[0], 'Prix']
+                         if pd.notna(first_valid_price_date) and first_valid_price_date > 0:
+                              buy_hold_value = (capital_initial / first_valid_price_date) * analysis_data.loc[common_index, 'Prix']
+                              ax_portfolio.plot(common_index, buy_hold_value, label='Stratégie Buy & Hold', color='grey', linestyle='--', linewidth=1)
+                         else:
+                              st.warning("Impossible de calculer la performance Buy & Hold (prix initial invalide).")
+                    else:
+                         st.warning("Impossible de calculer la performance Buy & Hold (index non alignés).")
+
 
                     ax_portfolio.set_title('Évolution de la Valeur du Portefeuille vs Buy & Hold', fontsize=14)
                     ax_portfolio.set_xlabel('Date', fontsize=10)
@@ -1412,24 +1460,25 @@ if 'data' in st.session_state and not st.session_state.data.empty:
                     with st.expander("Historique détaillé du portefeuille (100 dernières lignes)"):
                         st.dataframe(portfolio_history.tail(100).style.format({
                             'Cash': '{:,.2f}',
-                            'Position': '{:,.0f}',
+                            'Position': '{:,.0f}', # Afficher position comme entier
                             'Position Value': '{:,.2f}',
                             'Total Value': '{:,.2f}'
                         }))
                         st.markdown(get_csv_download_link(portfolio_history, filename=f"historique_portefeuille_{st.session_state.stock_name}.csv", link_text="Télécharger l'historique du portefeuille (CSV)"), unsafe_allow_html=True)
 
                 else:
-                    st.warning("L'historique du portefeuille est vide. Le backtest n'a peut-être pas pu s'exécuter.")
+                    st.warning("L'historique du portefeuille est vide ou trop court. Le backtest n'a peut-être pas pu s'exécuter correctement.")
 
 
                 # 2. Liste des Transactions
                 st.markdown("#### Liste des Transactions")
                 if trades:
                     trades_df = pd.DataFrame(trades)
+                    trades_df['Date'] = pd.to_datetime(trades_df['Date']) # Assurer type Date
                     trades_df.set_index('Date', inplace=True)
                     st.dataframe(trades_df.style.format({
                         'Prix': '{:,.2f}',
-                        'Quantité': '{:,.0f}',
+                        'Quantité': '{:,.0f}', # Afficher quantité comme entier
                         'Valeur': '{:,.2f}',
                         'Frais': '{:,.2f}',
                         'Cash Après': '{:,.2f}'
@@ -1447,45 +1496,65 @@ if 'data' in st.session_state and not st.session_state.data.empty:
                     total_return_pct = ((final_portfolio_value / capital_initial) - 1) * 100
                     start_date = portfolio_history.index[0]
                     end_date = portfolio_history.index[-1]
-                    duration_years = (end_date - start_date).days / 365.25
+                    # Calculer la durée en jours de trading réels si possible, sinon approximer
+                    duration_days = len(portfolio_history)
+                    duration_years = duration_days / 252.0 # Approximation avec jours de trading
 
-                    # Rendement Annualisé (CAGR)
-                    cagr = ((final_portfolio_value / capital_initial) ** (1 / duration_years) - 1) * 100 if duration_years > 0 else 0
+                    # Rendement Annualisé (CAGR) - S'assurer que duration_years > 0
+                    cagr = ((final_portfolio_value / capital_initial) ** (1 / duration_years) - 1) * 100 if duration_years > 0 and capital_initial > 0 and final_portfolio_value > 0 else 0
 
                     # Volatilité Annualisée
                     daily_returns = portfolio_history['Total Value'].pct_change().dropna()
-                    volatility_annualized = daily_returns.std() * np.sqrt(252) * 100 # 252 jours de trading par an
+                    if not daily_returns.empty:
+                         volatility_annualized = daily_returns.std() * np.sqrt(252) * 100
+                    else:
+                         volatility_annualized = 0.0
 
                     # Ratio de Sharpe
-                    # Taux sans risque journalier
-                    risk_free_rate_daily = (1 + taux_sans_risque_annuel)**(1/252) - 1
-                    excess_returns_daily = daily_returns - risk_free_rate_daily
-                    sharpe_ratio = (excess_returns_daily.mean() / excess_returns_daily.std()) * np.sqrt(252) if excess_returns_daily.std() != 0 else 0
+                    sharpe_ratio = 0.0
+                    if not daily_returns.empty and daily_returns.std() != 0:
+                        # Taux sans risque journalier
+                        risk_free_rate_daily = (1 + taux_sans_risque_annuel)**(1/252.0) - 1
+                        excess_returns_daily = daily_returns - risk_free_rate_daily
+                        if excess_returns_daily.std() != 0:
+                             sharpe_ratio = (excess_returns_daily.mean() / excess_returns_daily.std()) * np.sqrt(252)
 
                     # Max Drawdown
-                    rolling_max = portfolio_history['Total Value'].cummax()
-                    daily_drawdown = (portfolio_history['Total Value'] / rolling_max) - 1
-                    max_drawdown = daily_drawdown.min() * 100
+                    max_drawdown = 0.0
+                    if not portfolio_history.empty:
+                         rolling_max = portfolio_history['Total Value'].cummax()
+                         daily_drawdown = (portfolio_history['Total Value'] / rolling_max) - 1.0
+                         max_drawdown = daily_drawdown.min() * 100
 
                     # Performance Buy & Hold
-                    final_buy_hold_value = buy_hold_value.iloc[-1]
-                    bh_total_return_pct = ((final_buy_hold_value / capital_initial) - 1) * 100
-                    bh_cagr = ((final_buy_hold_value / capital_initial) ** (1 / duration_years) - 1) * 100 if duration_years > 0 else 0
+                    final_buy_hold_value = np.nan
+                    bh_total_return_pct = np.nan
+                    bh_cagr = np.nan
+                    if 'buy_hold_value' in locals() and not buy_hold_value.empty: # Vérifier si buy_hold_value a été calculé
+                         final_buy_hold_value = buy_hold_value.iloc[-1]
+                         bh_total_return_pct = ((final_buy_hold_value / capital_initial) - 1) * 100
+                         bh_cagr = ((final_buy_hold_value / capital_initial) ** (1 / duration_years) - 1) * 100 if duration_years > 0 and capital_initial > 0 and final_buy_hold_value > 0 else 0
+
 
                     # Affichage des métriques
                     col1, col2, col3 = st.columns(3)
-                    col1.metric("Valeur Finale Portefeuille", f"{final_portfolio_value:,.2f} FCFA", f"{total_return_pct:+.2f}% Total")
-                    col1.metric("Rendement Annualisé (CAGR)", f"{cagr:.2f}%")
-                    col2.metric("Volatilité Annualisée", f"{volatility_annualized:.2f}%")
+                    col1.metric("Valeur Finale Portefeuille", f"{final_portfolio_value:,.0f} FCFA", f"{total_return_pct:+.1f}% Total")
+                    col1.metric("Rendement Annualisé (CAGR)", f"{cagr:.1f}%")
+                    col2.metric("Volatilité Annualisée", f"{volatility_annualized:.1f}%")
                     col2.metric("Ratio de Sharpe", f"{sharpe_ratio:.2f}")
-                    col3.metric("Max Drawdown", f"{max_drawdown:.2f}%")
+                    col3.metric("Max Drawdown", f"{max_drawdown:.1f}%")
                     col3.metric("Nombre de Trades", f"{len(trades)}")
 
                     st.markdown("---")
                     st.markdown("##### Comparaison Buy & Hold")
                     col1b, col2b = st.columns(2)
-                    col1b.metric("Valeur Finale Buy & Hold", f"{final_buy_hold_value:,.2f} FCFA", f"{bh_total_return_pct:+.2f}% Total")
-                    col2b.metric("CAGR Buy & Hold", f"{bh_cagr:.2f}%")
+                    if pd.notna(final_buy_hold_value):
+                         col1b.metric("Valeur Finale Buy & Hold", f"{final_buy_hold_value:,.0f} FCFA", f"{bh_total_return_pct:+.1f}% Total")
+                         col2b.metric("CAGR Buy & Hold", f"{bh_cagr:.1f}%")
+                    else:
+                         col1b.metric("Valeur Finale Buy & Hold", "N/A")
+                         col2b.metric("CAGR Buy & Hold", "N/A")
+
 
                 else:
                     st.warning("Impossible de calculer les métriques de performance (historique de portefeuille vide ou trop court).")
