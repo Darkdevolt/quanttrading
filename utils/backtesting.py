@@ -220,4 +220,96 @@ def display_backtest_results(portfolio_history, trades, original_data):
         plt.close(fig_portfolio)
         
         # Afficher l'historique du portefeuille
-        with st.expander("Histor
+        with st.expander("Historique détaillé du portefeuille (100 dernières lignes)"):
+            st.dataframe(portfolio_history.tail(100).style.format({
+                'Cash': '{:,.2f}',
+                'Position': '{:,.0f}',
+                'Position Value': '{:,.2f}',
+                'Total Value': '{:,.2f}'
+            }))
+        
+        # Afficher la liste des transactions
+        st.markdown("#### Liste des Transactions")
+        if trades:
+            trades_df = pd.DataFrame(trades)
+            trades_df['Date'] = pd.to_datetime(trades_df['Date'])
+            trades_df.set_index('Date', inplace=True)
+            st.dataframe(trades_df.style.format({
+                'Prix': '{:.2f}',
+                'Quantité': '{:.0f}',
+                'Valeur': '{:.2f}',
+                'Frais': '{:.2f}',
+                'Cash Après': '{:.2f}'
+            }))
+        else:
+            st.info("Aucune transaction n'a été effectuée pendant la période de backtest.")
+        
+        # Afficher les métriques de performance
+        st.markdown("#### Métriques de Performance Clés")
+        if not portfolio_history.empty:
+            _display_performance_metrics(portfolio_history, trades, original_data)
+
+def _display_performance_metrics(portfolio_history, trades, original_data):
+    """Affiche les métriques de performance."""
+    final_portfolio_value = portfolio_history['Total Value'].iloc[-1]
+    capital_initial = float(st.session_state.get('initial_capital', 1000000))
+    total_return_pct = ((final_portfolio_value / capital_initial) - 1) * 100
+    
+    start_date = portfolio_history.index[0]
+    end_date = portfolio_history.index[-1]
+    duration_days = len(portfolio_history)
+    duration_years = duration_days / 252.0
+    
+    # Calcul du CAGR
+    cagr = ((final_portfolio_value / capital_initial) ** (1 / duration_years) - 1) * 100 if duration_years > 0 and capital_initial > 0 and final_portfolio_value > 0 else 0
+    
+    # Volatilité Annualisée
+    daily_returns = portfolio_history['Total Value'].pct_change().dropna()
+    volatility_annualized = daily_returns.std() * np.sqrt(252) * 100 if not daily_returns.empty else 0.0
+    
+    # Ratio de Sharpe
+    sharpe_ratio = 0.0
+    if not daily_returns.empty and daily_returns.std() != 0:
+        taux_sans_risque_annuel = st.session_state.get('risk_free_rate', 3.0) / 100.0
+        risk_free_rate_daily = (1 + taux_sans_risque_annuel)**(1/252.0) - 1
+        excess_returns_daily = daily_returns - risk_free_rate_daily
+        if excess_returns_daily.std() != 0:
+            sharpe_ratio = (excess_returns_daily.mean() / excess_returns_daily.std()) * np.sqrt(252)
+    
+    # Max Drawdown
+    rolling_max = portfolio_history['Total Value'].cummax()
+    daily_drawdown = (portfolio_history['Total Value'] / rolling_max) - 1.0
+    max_drawdown = daily_drawdown.min() * 100
+    
+    # Performance Buy & Hold
+    final_bh_value = np.nan
+    bh_total_return_pct = np.nan
+    bh_cagr = np.nan
+    
+    common_index = original_data.index.intersection(portfolio_history.index)
+    if not common_index.empty:
+        first_valid_price = original_data.loc[common_index[0], 'Prix']
+        if pd.notna(first_valid_price) and first_valid_price > 0:
+            final_bh_value = (capital_initial / first_valid_price) * original_data.loc[common_index[-1], 'Prix']
+            bh_total_return_pct = ((final_bh_value / capital_initial) - 1) * 100
+            bh_cagr = ((final_bh_value / capital_initial) ** (1 / duration_years) - 1) * 100 if duration_years > 0 else 0
+    
+    # Affichage des métriques
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Valeur Finale Portefeuille", f"{final_portfolio_value:,.0f} FCFA", f"{total_return_pct:+.1f}% Total")
+    col1.metric("Rendement Annualisé (CAGR)", f"{cagr:.1f}%")
+    col2.metric("Volatilité Annualisée", f"{volatility_annualized:.1f}%")
+    col2.metric("Ratio de Sharpe", f"{sharpe_ratio:.2f}")
+    col3.metric("Max Drawdown", f"{max_drawdown:.1f}%")
+    col3.metric("Nombre de Trades", f"{len(trades)}")
+    
+    st.markdown("---")
+    st.markdown("### Comparaison Buy & Hold")
+    col1b, col2b = st.columns(2)
+    
+    if pd.notna(final_bh_value):
+        col1b.metric("Valeur Finale Buy & Hold", f"{final_bh_value:,.0f} FCFA", f"{bh_total_return_pct:+.1f}% Total")
+        col2b.metric("CAGR Buy & Hold", f"{bh_cagr:.1f}%")
+    else:
+        col1b.metric("Valeur Finale Buy & Hold", "N/A")
+        col2b.metric("CAGR Buy & Hold", "N/A")
