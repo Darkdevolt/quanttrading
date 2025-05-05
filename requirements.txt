@@ -1,4 +1,4 @@
 streamlit
 pandas
 numpy
-matplotlib
+openpyxl # Ajouté pour lire les fichiers .xlsx
