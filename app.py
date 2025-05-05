@@ -28,7 +28,8 @@ def calcul_macd(series, fast=12, slow=26, signal=9):
     hist = macd_line - signal_line
     return pd.DataFrame({'MACD': macd_line, 'Signal': signal_line, 'Histogram': hist})
 
-# Backtest simplifié BRVM
+# Backtest simplifié BRVM avec variation max et délai de règlement
+
 def run_backtest(df, capital, commission, stop_loss_pct, take_profit_pct, variation_cap, settlement_days):
     data = df.copy().reset_index(drop=True)
     n = len(data)
@@ -38,40 +39,46 @@ def run_backtest(df, capital, commission, stop_loss_pct, take_profit_pct, variat
     portfolio = []
     prev_price = data.loc[0, 'Close']
 
+    position_open_day = -settlement_days - 1  # valeur initiale en dehors du range
+    buy_price = 0
+
     for i, row in data.iterrows():
         price = row['Close']
         # limiter variation journalière
-        var = (price - prev_price) / prev_price if prev_price>0 else 0
+        var = (price - prev_price) / prev_price if prev_price > 0 else 0
         if abs(var) > variation_cap:
             price = prev_price * (1 + np.sign(var) * variation_cap)
         prev_price = price
 
         signal = 0
-        # signal simple: SMA crossover
-        if i>0 and data.loc[i,'SMA_20']>data.loc[i,'SMA_50'] and data.loc[i-1,'SMA_20']<=data.loc[i-1,'SMA_50']:
+        if i > 0 and data.loc[i, 'SMA_20'] > data.loc[i, 'SMA_50'] and data.loc[i - 1, 'SMA_20'] <= data.loc[i - 1, 'SMA_50']:
             signal = 1
-        if i>0 and data.loc[i,'SMA_20']<data.loc[i,'SMA_50'] and data.loc[i-1,'SMA_20']>=data.loc[i-1,'SMA_50']:
+        if i > 0 and data.loc[i, 'SMA_20'] < data.loc[i, 'SMA_50'] and data.loc[i - 1, 'SMA_20'] >= data.loc[i - 1, 'SMA_50']:
             signal = -1
 
         # exécution ordre
-        if signal==1 and cash>price:
+        if signal == 1 and cash > price:
             shares = cash // price
-            cost = shares*price*(1+commission)
+            cost = shares * price * (1 + commission)
             cash -= cost
-        if signal==-1 and shares>0:
-            proceeds = shares*price*(1-commission)
+            buy_price = price
+            position_open_day = i
+
+        # Ne peut vendre que si 3 jours se sont écoulés
+        if signal == -1 and shares > 0 and i - position_open_day >= settlement_days:
+            proceeds = shares * price * (1 - commission)
             cash += proceeds
             shares = 0
 
-        total = cash + shares*price
+        total = cash + shares * price
         portfolio.append(total)
 
     # calcul metrics
     port = pd.Series(portfolio, index=df['Date'])
     returns = port.pct_change().fillna(0)
-    cum_ret = (port/ capital_init -1)*100
-    max_dd = (port.cummax() - port).max()/port.cummax().max()*100
-    sharpe = (returns.mean()/returns.std())*np.sqrt(252) if returns.std()>0 else np.nan
+    cum_ret = (port / capital_init - 1) * 100
+    max_dd = (port.cummax() - port).max() / port.cummax().max() * 100
+    sharpe = (returns.mean() / returns.std()) * np.sqrt(252) if returns.std() > 0 else np.nan
 
     return port, cum_ret, max_dd, sharpe
 
@@ -110,7 +117,6 @@ def process_data(file):
     df=df.rename(columns={'date':'Date','open':'Open','high':'High','low':'Low','close':'Close','volume':'Volume'})
     df['Date']=pd.to_datetime(df['Date'], errors='coerce')
     df=df.dropna(subset=['Date']).sort_values('Date').reset_index(drop=True)
-    # calcul indicateurs
     df['SMA_20']=calcul_sma(df['Close'],20)
     df['SMA_50']=calcul_sma(df['Close'],50)
     df['RSI_14']=calcul_rsi(df['Close'],14)
@@ -134,16 +140,4 @@ if file:
         # Paramètres backtest
         st.sidebar.header('Paramètres Backtest')
         capital=st.sidebar.number_input('Capital initial FCFA', min_value=100_000, max_value=int(1e9), value=100_000, step=10_000)
-        commission=st.sidebar.slider('Commission %',0.0,1.0,0.5)/100
-        stop_loss=st.sidebar.slider('Stop Loss %',1.0,20.0,5.0)/100
-        take_profit=st.sidebar.slider('Take Profit %',1.0,50.0,10.0)/100
-        var_cap=st.sidebar.slider('Variation max journalière %',0.0,0.3,0.1)
-        jours_reglement=st.sidebar.slider('Jours de règlement',0,5,2)
-
-        if st.sidebar.button('Lancer le Backtest'):
-            port, cum_ret, max_dd, sharpe = run_backtest(df, capital, commission, stop_loss, take_profit, var_cap, jours_reglement)
-            st.subheader('Performance du portefeuille')
-            st.line_chart(port)
-            st.write(f"Rendement cumulatif: {cum_ret.iloc[-1]:.2f} %")
-            st.write(f"Max Drawdown: {max_dd:.2f} %")
-            st.write(f"Sharpe Ratio: {sharpe:.2f}")
+        commission=st.sidebar.slider('Commission %',0.0,1.0,0.5
