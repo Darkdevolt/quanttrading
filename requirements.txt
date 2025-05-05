@@ -1,4 +1,6 @@
+# requirements.txt
 streamlit
 pandas
 numpy
-openpyxl # Ajouté pour lire les fichiers .xlsx
+openpyxl
+plotly 
