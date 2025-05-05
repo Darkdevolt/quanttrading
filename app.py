@@ -6,7 +6,7 @@ import plotly.express as px
 from io import BytesIO
 from datetime import datetime
 
-# Fonctions d'indicateurs techniques (SMA, RSI, MACD)
+# Indicateurs techniques (SMA, RSI, MACD)
 def calcul_sma(series, window):
     return series.rolling(window=window, min_periods=1).mean()
 
@@ -28,91 +28,128 @@ def calcul_macd(series, fast=12, slow=26, signal=9):
     hist = macd_line - signal_line
     return pd.DataFrame({'MACD': macd_line, 'Signal': signal_line, 'Histogram': hist})
 
-# Affichage de statistiques et graphiques
+# Backtest simplifié BRVM
+def run_backtest(df, capital, commission, stop_loss_pct, take_profit_pct, variation_cap, settlement_days):
+    data = df.copy().reset_index(drop=True)
+    n = len(data)
+    capital_init = capital
+    shares = 0
+    cash = capital
+    portfolio = []
+    prev_price = data.loc[0, 'Close']
+
+    for i, row in data.iterrows():
+        price = row['Close']
+        # limiter variation journalière
+        var = (price - prev_price) / prev_price if prev_price>0 else 0
+        if abs(var) > variation_cap:
+            price = prev_price * (1 + np.sign(var) * variation_cap)
+        prev_price = price
+
+        signal = 0
+        # signal simple: SMA crossover
+        if i>0 and data.loc[i,'SMA_20']>data.loc[i,'SMA_50'] and data.loc[i-1,'SMA_20']<=data.loc[i-1,'SMA_50']:
+            signal = 1
+        if i>0 and data.loc[i,'SMA_20']<data.loc[i,'SMA_50'] and data.loc[i-1,'SMA_20']>=data.loc[i-1,'SMA_50']:
+            signal = -1
+
+        # exécution ordre
+        if signal==1 and cash>price:
+            shares = cash // price
+            cost = shares*price*(1+commission)
+            cash -= cost
+        if signal==-1 and shares>0:
+            proceeds = shares*price*(1-commission)
+            cash += proceeds
+            shares = 0
+
+        total = cash + shares*price
+        portfolio.append(total)
+
+    # calcul metrics
+    port = pd.Series(portfolio, index=df['Date'])
+    returns = port.pct_change().fillna(0)
+    cum_ret = (port/ capital_init -1)*100
+    max_dd = (port.cummax() - port).max()/port.cummax().max()*100
+    sharpe = (returns.mean()/returns.std())*np.sqrt(252) if returns.std()>0 else np.nan
+
+    return port, cum_ret, max_dd, sharpe
+
+# Fonctions d'affichage
 
 def afficher_statistiques(df):
     st.subheader("Statistiques descriptives")
-    st.dataframe(df[['Open', 'High', 'Low', 'Close', 'Volume']].describe())
+    st.dataframe(df[['Open','High','Low','Close','Volume']].describe())
 
-def afficher_graphique_plotly(df):
-    st.subheader("Graphique interactif (Close)")
-    fig = px.line(df, x='Date', y='Close')
-    st.plotly_chart(fig)
-
-def afficher_graphique_matplotlib(df):
-    st.subheader("Graphique statique (Close)")
+def afficher_charts(df):
+    st.subheader("Cours et Moyennes Mobiles")
     fig, ax = plt.subplots()
     ax.plot(df['Date'], df['Close'], label='Close')
-    ax.set_xlabel('Date'); ax.set_ylabel('Prix de clôture')
+    ax.plot(df['Date'], df['SMA_20'], label='SMA20')
+    ax.plot(df['Date'], df['SMA_50'], label='SMA50')
     ax.legend(); st.pyplot(fig)
 
-def afficher_indicateurs(df):
-    st.subheader("Indicateurs techniques")
-    df['SMA_20'] = calcul_sma(df['Close'], 20)
-    df['RSI_14'] = calcul_rsi(df['Close'], 14)
-    macd_df = calcul_macd(df['Close'])
-    df = pd.concat([df.reset_index(drop=True), macd_df.reset_index(drop=True)], axis=1)
-
-    # SMA et Close
-    st.line_chart(df.set_index('Date')[['Close', 'SMA_20']])
-    # RSI
+    st.subheader("RSI (14)")
     st.line_chart(df.set_index('Date')['RSI_14'])
-    # MACD + Signal
-    st.line_chart(df.set_index('Date')[['MACD', 'Signal']])
-    # Histogramme MACD
+
+    st.subheader("MACD")
+    st.line_chart(df.set_index('Date')[['MACD','Signal']])
     st.subheader("Histogramme MACD")
-    fig, ax = plt.subplots()
-    ax.bar(df['Date'], df['Histogram'])
-    st.pyplot(fig)
+    fig2, ax2 = plt.subplots()
+    ax2.bar(df['Date'], df['Histogram']); st.pyplot(fig2)
 
-# Téléchargement de résumé
+# Traitement CSV
 
-def telecharger_resume(df):
-    st.subheader("Télécharger le résumé (CSV)")
-    buffer = BytesIO()
-    df.describe().to_csv(buffer)
-    buffer.seek(0)
-    st.download_button(label="Télécharger", data=buffer, file_name="resume.csv", mime="text/csv")
-
-# Traitement des données CSV
-
-def process_data(file) -> pd.DataFrame:
-    try:
-        df = pd.read_csv(file)
-        # Normalisation des noms de colonnes en minuscules
-        df.columns = df.columns.str.strip().str.lower()
-        required = ['date','open','high','low','close','volume']
-        missing = [col for col in required if col not in df.columns]
-        if missing:
-            st.error("Colonnes manquantes : " + ", ".join(missing))
-            return None
-        # Renommage en noms standard
-        df = df.rename(columns={
-            'date':'Date','open':'Open','high':'High',
-            'low':'Low','close':'Close','volume':'Volume'
-        })
-        df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
-        df = df.dropna(subset=['Date']).sort_values('Date').reset_index(drop=True)
-        return df
-    except Exception as e:
-        st.error(f"Erreur lecture fichier : {e}")
+def process_data(file):
+    df = pd.read_csv(file)
+    df.columns=df.columns.str.strip().str.lower()
+    req=['date','open','high','low','close','volume']
+    if any(col not in df.columns for col in req):
+        st.error('Colonnes manquantes: '+', '.join([c for c in req if c not in df.columns]))
         return None
+    df=df.rename(columns={'date':'Date','open':'Open','high':'High','low':'Low','close':'Close','volume':'Volume'})
+    df['Date']=pd.to_datetime(df['Date'], errors='coerce')
+    df=df.dropna(subset=['Date']).sort_values('Date').reset_index(drop=True)
+    # calcul indicateurs
+    df['SMA_20']=calcul_sma(df['Close'],20)
+    df['SMA_50']=calcul_sma(df['Close'],50)
+    df['RSI_14']=calcul_rsi(df['Close'],14)
+    macd=calcul_macd(df['Close'])
+    df=pd.concat([df,macd],axis=1)
+    return df
 
-# Interface principale
-st.title("Backtest BRVM - Analyse technique")
-fichier = st.file_uploader("Fichier CSV (Date,Open,High,Low,Close,Volume)", type='csv')
-if fichier:
-    df = process_data(fichier)
+# UI principale
+st.title('Backtest BRVM - Analyse technique avancée')
+file=st.file_uploader('CSV (Date,Open,High,Low,Close,Volume)',type='csv')
+if file:
+    df=process_data(file)
     if df is not None:
-        st.success("Fichier chargé.")
-        st.subheader("Aperçu")
-        n = st.slider("Lignes", 5, min(50,len(df)), 10)
-        st.dataframe(df.head(n))
-        sel = st.multiselect("Colonnes", df.columns.tolist(), default=['Date','Close'])
-        st.dataframe(df[sel])
-        afficher_statistiques(df)
-        afficher_graphique_plotly(df)
-        afficher_graphique_matplotlib(df)
-        afficher_indicateurs(df)
+        st.success('Données chargées')
+        st.subheader('Aperçu')
+        st.dataframe(df.head(10))
 
-# Fin du script
+        afficher_statistiques(df)
+        afficher_charts(df)
+
+        # Paramètres backtest
+        st.sidebar.header('Paramètres Backtest')
+        capital=st.sidebar.number_input('Capital initial FCFA',100000,1e9,100000)
+        commission=st.sidebar.slider('Commission %',0.0,1.0,0.5)/100
+        stop_loss=st.sidebar.slider('Stop Loss %',1.0,30.0,10.0)/100
+        take_profit=st.sidebar.slider('Take Profit %',5.0,100.0,20.0)/100
+        variation_cap=st.sidebar.slider('Plafond variation %',1.0,15.0,7.5)/100
+        settlement_days=st.sidebar.slider('Délai livraison (j ouvrés)',1,5,3)
+
+        if st.sidebar.button('Lancer Backtest'):
+            port, cum_ret, maxdd, sharpe=run_backtest(df,capital,commission,stop_loss,take_profit,variation_cap,settlement_days)
+            st.subheader('Résultats Backtest')
+            st.metric('Valeur Finale FCFA', f"{port.iloc[-1]:,.2f}")
+            st.metric('Drawdown Max %', f"{maxdd:.2f}%")
+            st.metric('Sharpe Ratio', f"{sharpe:.2f}")
+            st.subheader('Évolution Portefeuille')
+            fig3, ax3=plt.subplots()
+            ax3.plot(port.index, port.values); ax3.set_title('Portefeuille'); st.pyplot(fig3)
+            st.subheader('Rendement Cumulé %')
+            st.line_chart(cum_ret)
+
+# Fin
