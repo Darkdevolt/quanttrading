@@ -6,42 +6,75 @@ import plotly.express as px
 from io import BytesIO
 from datetime import datetime
 
-# TA-Lib alternatif avec pandas-ta
-import pandas_ta as ta
+# Implémentation manuelle des indicateurs techniques (SMA, RSI, MACD)
+def calcul_sma(series: pd.Series, window: int) -> pd.Series:
+    return series.rolling(window=window, min_periods=1).mean()
 
-def afficher_statistiques(df):
+def calcul_rsi(series: pd.Series, window: int = 14) -> pd.Series:
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+    avg_gain = gain.rolling(window=window, min_periods=window).mean()
+    avg_loss = loss.rolling(window=window, min_periods=window).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.fillna(0)
+
+def calcul_macd(series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.DataFrame:
+    ema_fast = series.ewm(span=fast, adjust=False).mean()
+    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    hist = macd_line - signal_line
+    return pd.DataFrame({
+        'MACD': macd_line,
+        'Signal': signal_line,
+        'Histogram': hist
+    })
+
+def afficher_statistiques(df: pd.DataFrame) -> None:
     st.subheader("Statistiques descriptives")
     stats = df[['Open', 'High', 'Low', 'Close', 'Volume']].describe()
     st.dataframe(stats)
 
-def afficher_graphique_plotly(df):
+def afficher_graphique_plotly(df: pd.DataFrame) -> None:
     st.subheader("Graphique interactif avec Plotly")
     fig = px.line(df, x='Date', y='Close', title='Prix de Clôture (Close)')
     st.plotly_chart(fig)
 
-def afficher_graphique_matplotlib(df):
+def afficher_graphique_matplotlib(df: pd.DataFrame) -> None:
     st.subheader("Graphique statique Matplotlib")
     fig, ax = plt.subplots()
-    ax.plot(df['Date'], df['Close'], label='Close', color='blue')
+    ax.plot(df['Date'], df['Close'], label='Close')
     ax.set_xlabel("Date")
     ax.set_ylabel("Prix de clôture")
     ax.set_title("Historique des prix de clôture")
     ax.legend()
     st.pyplot(fig)
 
-def afficher_indicateurs(df):
+def afficher_indicateurs(df: pd.DataFrame) -> None:
     st.subheader("Indicateurs techniques")
-    # Calcul SMA, RSI, MACD
-    df['SMA_20'] = ta.sma(df['Close'], length=20)
-    df['RSI_14'] = ta.rsi(df['Close'], length=14)
-    macd = ta.macd(df['Close'])
-    df = pd.concat([df, macd], axis=1)
+    # Calcul des indicateurs
+    df['SMA_20'] = calcul_sma(df['Close'], 20)
+    df['RSI_14'] = calcul_rsi(df['Close'], 14)
+    macd_df = calcul_macd(df['Close'], 12, 26, 9)
+    df = pd.concat([df.reset_index(drop=True), macd_df.reset_index(drop=True)], axis=1)
 
-    st.line_chart(df[['Close', 'SMA_20']].set_index(df['Date']))
-    st.line_chart(df[['RSI_14']].set_index(df['Date']))
-    st.line_chart(df[['MACD_12_26_9', 'MACDs_12_26_9']].set_index(df['Date']))
+    # Tracé
+    st.line_chart(df.set_index('Date')[['Close', 'SMA_20']])
+    st.line_chart(df.set_index('Date')[['RSI_14']])
+    st.line_chart(df.set_index('Date')[['MACD', 'Signal']])
 
-def telecharger_resume(df):
+    # Histogramme MACD
+    st.subheader("Histogramme MACD")
+    fig, ax = plt.subplots()
+    ax.bar(df['Date'], df['Histogram'], label='Histogramme MACD')
+    ax.set_xlabel("Date")
+    ax.set_ylabel("MACD Histogram")
+    ax.set_title("Histogramme de la MACD")
+    st.pyplot(fig)
+
+def telecharger_resume(df: pd.DataFrame) -> None:
     st.subheader("Télécharger un résumé des données")
     buffer = BytesIO()
     df.describe().to_csv(buffer)
@@ -53,74 +86,63 @@ def telecharger_resume(df):
         mime="text/csv"
     )
 
-def process_data(file):
+def process_data(file) -> pd.DataFrame:
     try:
         df = pd.read_csv(file)
-
-        colonnes_attendues = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
-        if not all(col in df.columns for col in colonnes_attendues):
-            st.error("Colonnes manquantes. Colonnes requises : " + ", ".join(colonnes_attendues))
+        required_cols = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+        if not all(col in df.columns for col in required_cols):
+            st.error("Colonnes manquantes. Requises: " + ", ".join(required_cols))
             return None
-
         df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
         df = df.dropna(subset=['Date'])
         df = df.sort_values('Date')
-
-        return df
-
+        return df.reset_index(drop=True)
     except Exception as e:
-        st.error(f"Erreur lors de la lecture du fichier : {e}")
+        st.error(f"Erreur lecture fichier : {e}")
         return None
 
-def test_lecture_fichier(n=30):
+def test_lecture_fichier(n: int = 30) -> list:
     erreurs = []
-    for i in range(n):
+    for _ in range(n):
         try:
             data = {
-                'Date': pd.date_range(start='2023-01-01', periods=10, freq='D'),
-                'Open': np.random.rand(10) * 100,
-                'High': np.random.rand(10) * 100,
-                'Low': np.random.rand(10) * 100,
-                'Close': np.random.rand(10) * 100,
-                'Volume': np.random.randint(100, 1000, size=10)
+                'Date': pd.date_range('2023-01-01', periods=10, freq='D'),
+                'Open': np.random.rand(10)*100,
+                'High': np.random.rand(10)*100,
+                'Low': np.random.rand(10)*100,
+                'Close': np.random.rand(10)*100,
+                'Volume': np.random.randint(100, 1000, 10)
             }
             df_test = pd.DataFrame(data)
-            buffer = BytesIO()
-            df_test.to_csv(buffer, index=False)
-            buffer.seek(0)
-
-            df_loaded = pd.read_csv(buffer)
-            assert all(col in df_loaded.columns for col in ['Date', 'Open', 'High', 'Low', 'Close', 'Volume'])
+            buf = BytesIO()
+            df_test.to_csv(buf, index=False)
+            buf.seek(0)
+            df_loaded = pd.read_csv(buf)
+            assert all(col in df_loaded.columns for col in data.keys())
         except Exception as e:
             erreurs.append(str(e))
     return erreurs
 
 # Interface principale
 st.title("Application d'analyse des données boursières - BRVM")
-
 fichier = st.file_uploader("Téléverser un fichier CSV contenant les données boursières", type="csv")
-
 if fichier:
     df = process_data(fichier)
     if df is not None:
         st.success("Fichier chargé avec succès.")
-
         st.subheader("Aperçu des données")
         nb_lignes = st.slider("Nombre de lignes à afficher", 5, min(50, len(df)), 10)
         st.dataframe(df.head(nb_lignes))
-
-        colonnes = st.multiselect("Sélectionnez les colonnes à afficher", options=df.columns.tolist(), default=['Date', 'Close'])
-        st.dataframe(df[colonnes])
-
+        cols = st.multiselect("Colonnes à afficher", options=df.columns.tolist(), default=['Date', 'Close'])
+        st.dataframe(df[cols])
         afficher_statistiques(df)
         afficher_graphique_plotly(df)
         afficher_graphique_matplotlib(df)
         afficher_indicateurs(df)
         telecharger_resume(df)
-
-# Tests automatiques (résumé non visible pour l'utilisateur final)
-erreurs_test = test_lecture_fichier()
-if erreurs_test:
-    st.warning(f"{len(erreurs_test)} erreurs détectées lors des tests internes.")
+# Tests internes
+erreurs = test_lecture_fichier()
+if erreurs:
+    st.warning(f"{len(erreurs)} erreurs détectées lors des tests internes.")
 else:
     st.info("Tous les tests de lecture de fichier (30/30) ont réussi.")
