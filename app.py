@@ -133,23 +133,17 @@ if file:
 
         # Paramètres backtest
         st.sidebar.header('Paramètres Backtest')
-        capital=st.sidebar.number_input('Capital initial FCFA',100000,1e9,100000)
+        capital=st.sidebar.number_input('Capital initial FCFA', min_value=100_000, max_value=int(1e9), value=100_000, step=10_000)
         commission=st.sidebar.slider('Commission %',0.0,1.0,0.5)/100
-        stop_loss=st.sidebar.slider('Stop Loss %',1.0,30.0,10.0)/100
-        take_profit=st.sidebar.slider('Take Profit %',5.0,100.0,20.0)/100
-        variation_cap=st.sidebar.slider('Plafond variation %',1.0,15.0,7.5)/100
-        settlement_days=st.sidebar.slider('Délai livraison (j ouvrés)',1,5,3)
+        stop_loss=st.sidebar.slider('Stop Loss %',1.0,20.0,5.0)/100
+        take_profit=st.sidebar.slider('Take Profit %',1.0,50.0,10.0)/100
+        var_cap=st.sidebar.slider('Variation max journalière %',0.0,0.3,0.1)
+        jours_reglement=st.sidebar.slider('Jours de règlement',0,5,2)
 
-        if st.sidebar.button('Lancer Backtest'):
-            port, cum_ret, maxdd, sharpe=run_backtest(df,capital,commission,stop_loss,take_profit,variation_cap,settlement_days)
-            st.subheader('Résultats Backtest')
-            st.metric('Valeur Finale FCFA', f"{port.iloc[-1]:,.2f}")
-            st.metric('Drawdown Max %', f"{maxdd:.2f}%")
-            st.metric('Sharpe Ratio', f"{sharpe:.2f}")
-            st.subheader('Évolution Portefeuille')
-            fig3, ax3=plt.subplots()
-            ax3.plot(port.index, port.values); ax3.set_title('Portefeuille'); st.pyplot(fig3)
-            st.subheader('Rendement Cumulé %')
-            st.line_chart(cum_ret)
-
-# Fin
+        if st.sidebar.button('Lancer le Backtest'):
+            port, cum_ret, max_dd, sharpe = run_backtest(df, capital, commission, stop_loss, take_profit, var_cap, jours_reglement)
+            st.subheader('Performance du portefeuille')
+            st.line_chart(port)
+            st.write(f"Rendement cumulatif: {cum_ret.iloc[-1]:.2f} %")
+            st.write(f"Max Drawdown: {max_dd:.2f} %")
+            st.write(f"Sharpe Ratio: {sharpe:.2f}")
