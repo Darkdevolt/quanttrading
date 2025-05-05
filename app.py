@@ -9,24 +9,25 @@ from strategies import simple_ma
 from backtesting import engine, metrics
 
 # --- Configuration de l'interface Streamlit ---
-st.set_page_config(layout="wide", page_title="Application de Backtesting Simple (Excel)")
+st.set_page_config(layout="wide", page_title="Application de Backtesting (CSV/Excel)")
 
-st.title("Application de Backtesting Simple (Données Excel)")
+st.title("Application de Backtesting (Données CSV ou Excel)")
 
-st.write("Uploader votre fichier de données historiques (Excel) et configurez les paramètres pour le backtest.")
+st.write("Uploader votre fichier de données historiques (CSV ou Excel) et configurez les paramètres pour le backtest.")
 
 # --- Input Fichier ---
-# Change le type accepté pour inclure 'xlsx' et 'xls'
-uploaded_file = st.file_uploader("Uploader votre fichier de données historiques (Excel)", type=["xlsx", "xls"])
+# Accepte maintenant les fichiers CSV, XLSX et XLS
+uploaded_file = st.file_uploader("Uploader votre fichier de données historiques (.csv, .xlsx, .xls)", type=["csv", "xlsx", "xls"])
 
 # --- Inputs de Configuration (affichés seulement si un fichier est potentiellement là) ---
 df_initial = None
 if uploaded_file is not None:
     # Tenter de charger les données immédiatement après l'upload
+    # Le loader s'occupe de détecter le format
     df_initial = loader.load_historical_data_from_upload(uploaded_file)
 
     if df_initial is not None and not df_initial.empty:
-        st.success("Fichier Excel chargé avec succès.")
+        st.success("Fichier chargé et traité avec succès.")
         st.write("Aperçu des données chargées :")
         st.dataframe(df_initial.head()) # Afficher les premières lignes
 
@@ -55,7 +56,7 @@ if uploaded_file is not None:
             if pd.to_datetime(start_date) > pd.to_datetime(end_date):
                  st.error("La date de début ne peut pas être postérieure à la date de fin.")
             else:
-                # Filtrer les données par la plage de dates sélectionnée par l'utilisateur
+                # Filtrer les données par la plage de dates sélectionnée
                 df_filtered = df_initial.loc[str(start_date):str(end_date)].copy()
 
                 if df_filtered.empty:
@@ -79,7 +80,7 @@ if uploaded_file is not None:
                         st.header("Résultats du Backtest")
 
                         st.subheader("Métriques de Performance")
-                        metrics_col1, metrics_col2, metrics_col3, metrics_col4 = st.columns(4) # Ajouter une colonne pour CAGR
+                        metrics_col1, metrics_col2, metrics_col3, metrics_col4 = st.columns(4)
                         with metrics_col1:
                             st.metric("Capital Initial", performance_metrics.get("Capital Initial", "N/A"))
                         with metrics_col2:
@@ -109,6 +110,7 @@ if uploaded_file is not None:
                         df_final_plot['Buy Signal'] = df_plot['Buy Signal']
                         df_final_plot['Sell Signal'] = df_plot['Sell Signal']
 
+
                         st.line_chart(df_final_plot, use_container_width=True)
                         st.markdown("*(Les points bleus indiquent les achats, les points rouges indiquent les ventes selon la stratégie simplifiée)*")
 
@@ -118,18 +120,19 @@ if uploaded_file is not None:
 
     # Si le fichier a été uploadé mais le chargement initial a échoué
     elif uploaded_file is not None and (df_initial is None or df_initial.empty):
-         st.error("Impossible de charger ou de traiter le fichier Excel uploadé. Veuillez vérifier qu'il est bien un fichier Excel valide (.xlsx ou .xls) avec les colonnes 'Date' et 'Close'.")
+         st.error("Impossible de charger ou de traiter le fichier uploadé. Veuillez vérifier qu'il est bien un fichier CSV ou Excel (.xlsx ou .xls) valide avec les colonnes 'Date' et 'Close'.")
 
 
 # Message si aucun fichier n'a encore été uploadé
 elif uploaded_file is None:
-     st.info("Veuillez uploader un fichier Excel (.xlsx ou .xls) de données historiques pour commencer.")
+     st.info("Veuillez uploader un fichier CSV ou Excel (.csv, .xlsx, ou .xls) de données historiques pour commencer.")
 
 
 st.sidebar.header("À Propos")
 st.sidebar.info(
     "Cette application est un exemple *simplifié* de backtesting "
-    "basé sur des données uploadées (Excel), démontrant l'organisation du code."
-    "\n\nAssurez-vous que votre fichier Excel contient au moins "
-    "une colonne nommée exactement `Date` et une colonne nommée exactement `Close` (prix de clôture numérique)."
+    "basé sur des données uploadées, démontrant l'organisation du code."
+    "\n\nAssurez-vous que votre fichier (CSV ou Excel) contient au moins "
+    "une colonne nommée exactement `Date` (format date/heure standard) "
+    "et une colonne nommée exactement `Close` (prix de clôture numérique)."
 )
