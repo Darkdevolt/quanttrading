@@ -64,7 +64,7 @@ def run_backtest(df, capital, commission, stop_loss_pct, take_profit_pct, variat
             buy_price = price
             position_open_day = i
 
-        # Ne peut vendre que si 3 jours se sont écoulés
+        # Ne peut vendre que si délai écoulé
         if signal == -1 and shares > 0 and i - position_open_day >= settlement_days:
             proceeds = shares * price * (1 - commission)
             cash += proceeds
@@ -134,10 +134,19 @@ if file:
         st.subheader('Aperçu')
         st.dataframe(df.head(10))
 
+        capital = st.sidebar.number_input('Capital initial', min_value=10000, value=100000)
+        commission = st.sidebar.slider('Commission %', min_value=0.0, max_value=1.0, value=0.5, step=0.01) / 100
+        stop_loss_pct = st.sidebar.slider('Stop Loss %', 0.0, 20.0, 5.0, step=0.5) / 100
+        take_profit_pct = st.sidebar.slider('Take Profit %', 0.0, 50.0, 10.0, step=0.5) / 100
+        variation_cap = 0.075  # variation max journalière (7.5%)
+        settlement_days = 3  # délai avant de pouvoir vendre
+
+        st.subheader("Backtest")
+        port, cum_ret, max_dd, sharpe = run_backtest(df, capital, commission, stop_loss_pct, take_profit_pct, variation_cap, settlement_days)
+        st.line_chart(port)
+        st.metric("Performance cumulée", f"{cum_ret.iloc[-1]:.2f}%")
+        st.metric("Max Drawdown", f"{max_dd:.2f}%")
+        st.metric("Sharpe Ratio", f"{sharpe:.2f}")
+
         afficher_statistiques(df)
         afficher_charts(df)
-
-        # Paramètres backtest
-        st.sidebar.header('Paramètres Backtest')
-        capital=st.sidebar.number_input('Capital initial FCFA', min_value=100_000, max_value=int(1e9), value=100_000, step=10_000)
-        commission=st.sidebar.slider('Commission %',0.0,1.0,0.5
