@@ -6,6 +6,9 @@ import plotly.express as px
 from io import BytesIO
 from datetime import datetime
 
+# TA-Lib alternatif avec pandas-ta
+import pandas_ta as ta
+
 def afficher_statistiques(df):
     st.subheader("Statistiques descriptives")
     stats = df[['Open', 'High', 'Low', 'Close', 'Volume']].describe()
@@ -25,6 +28,18 @@ def afficher_graphique_matplotlib(df):
     ax.set_title("Historique des prix de clôture")
     ax.legend()
     st.pyplot(fig)
+
+def afficher_indicateurs(df):
+    st.subheader("Indicateurs techniques")
+    # Calcul SMA, RSI, MACD
+    df['SMA_20'] = ta.sma(df['Close'], length=20)
+    df['RSI_14'] = ta.rsi(df['Close'], length=14)
+    macd = ta.macd(df['Close'])
+    df = pd.concat([df, macd], axis=1)
+
+    st.line_chart(df[['Close', 'SMA_20']].set_index(df['Date']))
+    st.line_chart(df[['RSI_14']].set_index(df['Date']))
+    st.line_chart(df[['MACD_12_26_9', 'MACDs_12_26_9']].set_index(df['Date']))
 
 def telecharger_resume(df):
     st.subheader("Télécharger un résumé des données")
@@ -81,7 +96,7 @@ def test_lecture_fichier(n=30):
     return erreurs
 
 # Interface principale
-st.title("Application d'analyse des données boursières")
+st.title("Application d'analyse des données boursières - BRVM")
 
 fichier = st.file_uploader("Téléverser un fichier CSV contenant les données boursières", type="csv")
 
@@ -100,6 +115,7 @@ if fichier:
         afficher_statistiques(df)
         afficher_graphique_plotly(df)
         afficher_graphique_matplotlib(df)
+        afficher_indicateurs(df)
         telecharger_resume(df)
 
 # Tests automatiques (résumé non visible pour l'utilisateur final)
