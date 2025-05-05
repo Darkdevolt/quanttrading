@@ -1,81 +1,79 @@
 # data/loader.py
 import pandas as pd
-import io # Utile pour lire les fichiers uploadés
-import os # Utile pour obtenir l'extension du nom de fichier
+import io
+import os
 
 def load_historical_data_from_upload(uploaded_file):
-    """
-    Charge les données historiques depuis un fichier uploadé (CSV ou Excel attendu).
-    Détecte le type de fichier par son extension.
-    Supppose que le fichier a une colonne 'Date' et une colonne 'Close'.
+    # ... (début de la fonction) ...
 
-    Args:
-        uploaded_file: L'objet fichier obtenu depuis st.file_uploader.
-
-    Returns:
-        pd.DataFrame: DataFrame avec les données historiques (Index=Date, Colonne 'Close'),
-                      ou None si erreur, format non supporté, ou colonnes manquantes.
-    """
-    if uploaded_file is None:
-        return None
-
-    # Obtenir le nom et l'extension du fichier
-    file_name = uploaded_file.name
-    file_extension = os.path.splitext(file_name)[1].lower() # Ex: '.csv', '.xlsx'
+    print(f"Tentative de chargement du fichier : {file_name}")
+    print(f"Extension détectée : {file_extension}")
 
     dataframe = None
 
     try:
         if file_extension == '.csv':
-            # Lire le fichier CSV
-            # Utilise io.StringIO et decode pour lire depuis l'objet BytesIO de Streamlit
-            dataframe = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode('utf-8')))
-            print("Fichier détecté comme CSV.")
+            # ... lecture CSV ...
+            print("Lecture CSV réussie (si pas d'exception ici).")
 
         elif file_extension in ['.xlsx', '.xls']:
-            # Lire le fichier Excel
-            # pandas.read_excel gère directement l'objet fichier uploadé
-            dataframe = pd.read_excel(uploaded_file)
-            print(f"Fichier détecté comme Excel ({file_extension}).")
+            # ... lecture Excel ...
+            print("Lecture Excel réussie (si pas d'exception ici).")
 
         else:
             print(f"Format de fichier non supporté : {file_extension}")
             return None
 
-        # --- Validation et préparation des données (Appliqué après lecture, quel que soit le format) ---
+        # --- Validation et préparation ---
         if dataframe is None or dataframe.empty:
-            print("Le fichier a été lu mais le DataFrame est vide.")
+            print("DataFrame est None ou vide juste après la lecture.")
             return None
 
-        # Attendre les colonnes nommées 'Date' et 'Close'
+        print(f"DataFrame chargé. Forme : {dataframe.shape}")
+        print(f"Colonnes trouvées : {dataframe.columns.tolist()}")
+        print(f"Index actuel : {dataframe.index.name}")
+
         required_columns = ['Date', 'Close']
         if not all(col in dataframe.columns for col in required_columns):
-             print(f"Erreur: Le fichier doit contenir les colonnes: {required_columns}")
-             print(f"Colonnes trouvées: {dataframe.columns.tolist()}")
+             print(f"Erreur: Colonnes requises {required_columns} non trouvées.")
+             print(f"Colonnes présentes : {dataframe.columns.tolist()}")
              return None
 
-        # Convertir la colonne 'Date' en datetime et la définir comme index
-        # Ceci fonctionne pour les dates lues depuis CSV ou Excel, tant que le format est standard.
-        dataframe['Date'] = pd.to_datetime(dataframe['Date'])
+        # Convertir la colonne 'Date'
+        print(f"Tentative de conversion de la colonne 'Date' (type actuel: {dataframe['Date'].dtype})...")
+        original_date_col = dataframe['Date'] # Garder l'original pour débogage
+        dataframe['Date'] = pd.to_datetime(dataframe['Date'], errors='coerce') # Utilisez errors='coerce' pour voir quelles valeurs échouent
+
+        if dataframe['Date'].isnull().any():
+             print("Attention: Certaines dates n'ont pas pu être parsées.")
+             # Optionnel: Afficher les valeurs qui n'ont pas pu être parsées
+             # print(original_date_col[dataframe['Date'].isnull()])
+             # Vous pourriez décider de supprimer ces lignes si nécessaire
+             # dataframe.dropna(subset=['Date'], inplace=True)
+
+
         dataframe.set_index('Date', inplace=True)
+        print("Colonne 'Date' définie comme index.")
 
-        # Trier par index (date) pour s'assurer de l'ordre chronologique
         dataframe.sort_index(inplace=True)
+        print("DataFrame trié par date.")
 
-        # S'assurer que la colonne 'Close' est numérique et gérer les erreurs
+        # S'assurer que 'Close' est numérique
+        print(f"Tentative de conversion de la colonne 'Close' (type actuel: {dataframe['Close'].dtype})...")
         dataframe['Close'] = pd.to_numeric(dataframe['Close'], errors='coerce')
-        # Supprimer les lignes où 'Close' n'est pas un nombre valide après conversion
+        initial_rows = len(dataframe)
         dataframe.dropna(subset=['Close'], inplace=True)
+        if len(dataframe) < initial_rows:
+             print(f"Attention: {initial_rows - len(dataframe)} lignes supprimées car 'Close' n'était pas numérique.")
+
 
         if dataframe.empty:
-             print("Erreur: Aucune donnée valide trouvée après chargement et nettoyage.")
+             print("Le DataFrame est devenu vide après le nettoyage des dates/prix.")
              return None
 
+        print("Chargement et préparation réussis.")
         return dataframe
 
     except Exception as e:
-        # Capturer toute autre erreur lors de la lecture ou du traitement
-        print(f"Erreur lors du chargement ou traitement du fichier : {e}")
+        print(f"Une erreur inattendue s'est produite pendant le traitement : {e}")
         return None
-
-# data/__init__.py reste vide
