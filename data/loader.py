@@ -1,119 +1,245 @@
 # data/loader.py
 import pandas as pd
-import io # Utile pour lire les fichiers uploadés
-import os # Utile pour obtenir l'extension du nom de fichier
+import io
+import os
+import csv # Nécessaire pour le sniffer de séparateur
 
-def load_historical_data_from_upload(uploaded_file):
+def load_and_process_data(uploaded_file, column_mapping, date_format=None):
     """
-    Charge les données historiques depuis un fichier uploadé (CSV ou Excel attendu).
-    Détecte le type de fichier par son extension.
-    Supppose que le fichier a une colonne 'Date' et une colonne 'Close'.
+    Charge, valide et traite les données historiques depuis un fichier uploadé.
+    Gère le mapping des colonnes, la conversion des dates/nombres, et le nettoyage.
 
     Args:
-        uploaded_file: L'objet fichier obtenu depuis st.file_uploader.
+        uploaded_file: Objet fichier uploadé par Streamlit.
+        column_mapping (dict): Dictionnaire mappant les noms standardisés
+                               aux noms de colonnes du fichier source.
+                               Ex: {"Date": "Date", "Open": "Open", ...}
+        date_format (str, optional): Format de date explicite à essayer si la conversion échoue.
 
     Returns:
-        pd.DataFrame: DataFrame avec les données historiques (Index=Date, Colonne 'Close'),
-                      ou None si erreur, format non supporté, ou colonnes manquantes.
+        pd.DataFrame: DataFrame traité et standardisé (index = Date, colonnes = standardisées),
+                      ou None en cas d'erreur.
     """
     if uploaded_file is None:
-        print("Aucun fichier n'a été uploadé.") # Debug print
+        # Le message d'erreur "Veuillez charger un fichier" sera géré dans l'UI (app.py)
         return None
 
-    # Obtenir le nom et l'extension du fichier
-    file_name = uploaded_file.name
-    file_extension = os.path.splitext(file_name)[1].lower() # Ex: '.csv', '.xlsx'
-
-    # --- Le print déplacé APRÈS la définition de file_name ---
-    print(f"Tentative de chargement du fichier : {file_name}")
-    print(f"Extension détectée : {file_extension}")
-    # -----------------------------------------------------
-
-    dataframe = None
+    # Vérifier que le mapping minimal est fourni
+    required_keys = ['Date', 'Open', 'High', 'Low', 'Close', 'Volume']
+    if not all(key in column_mapping and column_mapping[key] for key in required_keys):
+         # Le message d'avertissement sur les colonnes manquantes sera géré dans l'UI (app.py)
+         return None
 
     try:
-        if file_extension == '.csv':
-            print("Lecture du fichier comme CSV...") # Debug print
-            # Utilise io.StringIO et decode pour lire depuis l'objet BytesIO de Streamlit
-            dataframe = pd.read_csv(io.StringIO(uploaded_file.getvalue().decode('utf-8')))
-            print("Lecture CSV réussie (si pas d'exception ici).") # Debug print
+        # --- Détection du séparateur et lecture du fichier CSV ---
+        # Revenir au début du fichier pour la lecture
+        uploaded_file.seek(0)
+        sample_bytes = uploaded_file.read(2048) # Lire un échantillon pour le sniffer
+        uploaded_file.seek(0) # Revenir au début pour la lecture complète
 
-        elif file_extension in ['.xlsx', '.xls']:
-            print(f"Lecture du fichier comme Excel ({file_extension})...") # Debug print
-            # pandas.read_excel gère directement l'objet fichier uploadé
-            dataframe = pd.read_excel(uploaded_file)
-            print("Lecture Excel réussie (si pas d'exception ici).") # Debug print
+        try:
+            sample_text = sample_bytes.decode('utf-8')
+        except UnicodeDecodeError:
+             sample_text = sample_bytes.decode('latin-1', errors='ignore') # Essayer Latin-1 si UTF-8 échoue
 
-        else:
-            print(f"Format de fichier non supporté : {file_extension}") # Debug print
+        separator = ',' # Séparateur par défaut
+        try:
+            if sample_text.strip():
+                sniffer = csv.Sniffer()
+                dialect = sniffer.sniff(sample_text)
+                separator = dialect.delimiter
+                # print(f"Séparateur détecté par Sniffer : '{separator}'") # Logs de débogage
+            # else: print("L'échantillon du fichier est vide...") # Logs de débogage
+        except csv.Error:
+            # print("Sniffer n'a pas pu déterminer le séparateur. Essai manuel...") # Logs de débogage
+            # Fallback manuel pour séparateur (simple : compte ';' vs ',')
+            uploaded_file.seek(0)
+            try:
+                header_line_bytes = uploaded_file.readline()
+                try: header_line = header_line_bytes.decode('utf-8')
+                except UnicodeDecodeError: header_line = header_line_bytes.decode('latin-1', errors='ignore')
+            except Exception as read_err:
+                 print(f"Impossible de lire la première ligne pour la détection manuelle du séparateur: {read_err}") # Logs de débogage
+                 return None
+            uploaded_file.seek(0) # Revenir au début
+            if header_line and header_line.count(';') >= header_line.count(','):
+                 separator = ';'
+            else:
+                 separator = ','
+            # print(f"Utilisation probable du séparateur '{separator}'...") # Logs de débogage
+
+        # Lire le fichier CSV complet avec le séparateur détecté
+        uploaded_file.seek(0) # Revenir au début une dernière fois avant la lecture pandas
+        try:
+            df = pd.read_csv(uploaded_file, sep=separator)
+        except UnicodeDecodeError:
+            print("Échec de la lecture en UTF-8, tentative en Latin-1...") # Logs de débogage
+            uploaded_file.seek(0)
+            try:
+                df = pd.read_csv(uploaded_file, sep=separator, encoding='latin-1')
+            except Exception as enc_err:
+                 print(f"Impossible de lire le fichier CSV avec les encodages UTF-8 ou Latin-1. Erreur: {enc_err}") # Logs de débogage
+                 # Afficher l'erreur dans l'UI sera géré dans app.py
+                 return None
+        except Exception as read_err:
+            print(f"Erreur lors de la lecture du fichier CSV avec pandas : {read_err}") # Logs de débogage
+            # Afficher l'erreur dans l'UI sera géré dans app.py
             return None
 
-        # --- Validation et préparation (Appliqué après lecture) ---
-        if dataframe is None or dataframe.empty:
-            print("DataFrame est None ou vide juste après la lecture.") # Debug print
+        if df.empty:
+            print("Le fichier CSV est vide ou n'a pas pu être lu correctement par Pandas.") # Logs de débogage
+            # Afficher l'erreur dans l'UI sera géré dans app.py
             return None
 
-        print(f"DataFrame chargé. Forme : {dataframe.shape}") # Debug print
-        print(f"Colonnes trouvées : {dataframe.columns.tolist()}") # Debug print
-        # L'index n'est pas encore défini, donc on ne peut pas print son nom ici sans risque d'erreur si set_index échoue
+        # print("Colonnes détectées dans le fichier :", list(df.columns)) # Logs de débogage
 
-        required_columns = ['Date', 'Close']
-        if not all(col in dataframe.columns for col in required_columns):
-             print(f"Erreur: Colonnes requises {required_columns} non trouvées.") # Debug print
-             print(f"Colonnes présentes : {dataframe.columns.tolist()}") # Debug print
+        # --- Validation des colonnes mappées ---
+        missing_in_file = []
+        for standard_name, user_name in column_mapping.items():
+            if user_name and user_name not in df.columns:
+                 missing_in_file.append(user_name)
+
+        if missing_in_file:
+             print(f"Les colonnes mappées suivantes n'existent pas dans le fichier : {', '.join(missing_in_file)}") # Logs de débogage
+             # Afficher l'erreur dans l'UI sera géré dans app.py
              return None
 
-        # Convertir la colonne 'Date'
-        print(f"Tentative de conversion de la colonne 'Date' (type actuel: {dataframe['Date'].dtype})...") # Debug print
-        original_date_col_for_debug = dataframe['Date'] # Garder l'original pour débogage si besoin
-        dataframe['Date'] = pd.to_datetime(dataframe['Date'], errors='coerce') # Utilisez errors='coerce' pour voir quelles valeurs échouent
 
-        if dataframe['Date'].isnull().any():
-             print("Attention: Certaines dates n'ont pas pu être parsées et sont NaN.") # Debug print
-             # Optionnel: Afficher les valeurs qui n'ont pas pu être parsées
-             # print("Exemples de dates non parsées:")
-             # print(original_date_col_for_debug[dataframe['Date'].isnull()].head())
-             # Vous pourriez décider de supprimer ces lignes si nécessaire
-             # dataframe.dropna(subset=['Date'], inplace=True) # Si vous décommentez ceci, ajoutez un print avant/après
+        # --- Standardisation et Conversion ---
+        df_standardized = pd.DataFrame()
 
-        # IMPORTANT : S'assurer qu'aucune date n'est NaT (Not a Time) avant de définir l'index
-        dataframe.dropna(subset=['Date'], inplace=True) # Supprime les lignes où la conversion de date a échoué
-        if dataframe.empty:
-            print("Le DataFrame est vide après suppression des dates non valides.") # Debug print
+        # Conversion de la colonne Date
+        date_col_name = column_mapping['Date']
+        try:
+            # Tenter d'abord la conversion automatique
+            df_standardized['Date'] = pd.to_datetime(df[date_col_name], errors='coerce', infer_datetime_format=True)
+
+            # Si toutes les dates sont NaT (conversion automatique échouée) et qu'un format explicite est donné
+            if df_standardized['Date'].isnull().all() and date_format:
+                 print(f"Conversion automatique de date échouée. Tentative avec le format explicite : {date_format}") # Logs de débogage
+                 try:
+                     # Utiliser une copie pour éviter SettingWithCopyWarning si df original est une vue
+                     df_copy_for_date = df[[date_col_name]].copy()
+                     df_standardized['Date'] = pd.to_datetime(df_copy_for_date[date_col_name], format=date_format, errors='coerce')
+                 except Exception as fmt_e:
+                     print(f"Erreur application format date '{date_format}' à '{date_col_name}': {fmt_e}") # Logs de débogage
+                     # Afficher l'erreur dans l'UI sera géré dans app.py
+                     return None
+        except Exception as e:
+            print(f"Erreur générale conversion colonne Date ('{date_col_name}'): {e}") # Logs de débogage
+            # Afficher l'erreur dans l'UI sera géré dans app.py
             return None
 
-
-        dataframe.set_index('Date', inplace=True)
-        print("Colonne 'Date' définie comme index.") # Debug print
-        print(f"Index actuel après set_index : {dataframe.index.name}") # Debug print
-
-
-        dataframe.sort_index(inplace=True)
-        print("DataFrame trié par date.") # Debug print
-
-        # S'assurer que 'Close' est numérique
-        print(f"Tentative de conversion de la colonne 'Close' (type actuel: {dataframe['Close'].dtype})...") # Debug print
-        dataframe['Close'] = pd.to_numeric(dataframe['Close'], errors='coerce')
-        initial_rows_close_check = len(dataframe)
-        dataframe.dropna(subset=['Close'], inplace=True) # Supprime les lignes où 'Close' n'est pas numérique
-        if len(dataframe) < initial_rows_close_check:
-             print(f"Attention: {initial_rows_close_check - len(dataframe)} lignes supprimées car 'Close' n'était pas numérique.") # Debug print
-
-
-        if dataframe.empty:
-             print("Le DataFrame est devenu vide après le nettoyage des dates/prix.") # Debug print
+        # Vérifier si la conversion de date a réussi pour au moins une ligne
+        if df_standardized['Date'].isnull().all():
+             print(f"Impossible de convertir la colonne Date ('{date_col_name}') en dates valides pour toutes les lignes.") # Logs de débogage
+             # Afficher l'erreur dans l'UI sera géré dans app.py
              return None
 
-        print("Chargement et préparation réussis.") # Debug print
-        print(f"DataFrame final shape: {dataframe.shape}") # Debug print
-        print(f"DataFrame final head:\n{dataframe.head()}") # Debug print
+        # Gérer les valeurs NaN créées par errors='coerce' dans la colonne Date
+        nan_dates_count = df_standardized['Date'].isnull().sum()
+        if nan_dates_count > 0:
+            print(f"{nan_dates_count} valeur(s) Date ('{date_col_name}') invalides ou vides trouvées. Lignes correspondantes seront supprimées.") # Logs de débogage
+            df_standardized = df_standardized.dropna(subset=['Date'])
+            if df_standardized.empty:
+                 print("Toutes les lignes supprimées après échec conversion dates.") # Logs de débogage
+                 # Afficher l'erreur dans l'UI sera géré dans app.py
+                 return None
 
 
-        return dataframe
+        # Conversion des colonnes numériques (Open, High, Low, Close, Volume)
+        standard_to_user_map = {
+            'Ouverture': column_mapping.get('Open'),
+            'Plus_Haut': column_mapping.get('High'),
+            'Plus_Bas': column_mapping.get('Low'),
+            'Prix': column_mapping.get('Close'), # Utilisez 'Prix' pour la colonne Close standardisée
+            'Volume': column_mapping.get('Volume')
+        }
+        # Filtrer les entrées où le nom utilisateur est vide (colonne non mappée)
+        standard_to_user_map = {k: v for k, v in standard_to_user_map.items() if v}
+
+        for standard_col_name, user_col_name in standard_to_user_map.items():
+            try:
+                # Gérer les virgules comme séparateur décimal et les espaces
+                if df[user_col_name].dtype == 'object':
+                     # Nettoyer la série : enlever les espaces, remplacer virgule par point
+                     cleaned_series = df[user_col_name].astype(str).str.strip().str.replace(',', '.', regex=False).str.replace(r'\s+', '', regex=True)
+                     # Tenter la conversion numérique
+                     converted_series = pd.to_numeric(cleaned_series, errors='coerce')
+
+                     # Fallback plus agressif si la première tentative échoue (e.g., caractères non numériques restants)
+                     if converted_series.isnull().all() and not df[user_col_name].isnull().all():
+                          print(f"Conversion numérique simple de '{user_col_name}' échouée, tentative de nettoyage agressif...") # Logs de débogage
+                          # Enlever tout sauf chiffres, point, tiret (pour les nombres négatifs)
+                          cleaned_series = cleaned_series.str.replace(r'[^\d.-]+', '', regex=True)
+                          # Gérer les cas où il ne reste que . ou -.
+                          cleaned_series = cleaned_series.str.replace(r'^(-?\.)?$', '', regex=True)
+                          # Gérer les multiples tirets (garder le premier si présent, ex: --5 -> -5)
+                          cleaned_series = cleaned_series.str.replace(r'(-.*)-', r'\1', regex=True)
+                          converted_series = pd.to_numeric(cleaned_series, errors='coerce')
+
+                     df_standardized[standard_col_name] = converted_series
+                else:
+                     # Si la colonne est déjà numérique, tenter la conversion directe avec coerce
+                     df_standardized[standard_col_name] = pd.to_numeric(df[user_col_name], errors='coerce')
+
+                nan_after_conversion = df_standardized[standard_col_name].isnull().sum()
+                if nan_after_conversion > 0:
+                     print(f"{nan_after_conversion} NaN créés dans '{user_col_name}' ({standard_col_name}) lors de la conversion numérique.") # Logs de débogage
+
+            except KeyError:
+                 # Cette colonne n'était pas mappée, on l'ignore.
+                 pass
+            except Exception as e:
+                print(f"Erreur conversion numérique colonne '{user_col_name}' ({standard_col_name}) : {e}") # Logs de débogage
+                # Afficher l'erreur dans l'UI sera géré dans app.py
+                return None
+
+        # --- Traitements Finaux ---
+        # Trier par date (l'index est déjà la date après set_index)
+        df_standardized = df_standardized.sort_index()
+
+        # Gérer les duplicatas d'index (dates) - Conserver la dernière entrée
+        if df_standardized.index.duplicated().any():
+            duplicates_count = df_standardized.index.duplicated().sum()
+            print(f"Il y a {duplicates_count} dates dupliquées dans vos données. Seule la dernière entrée pour chaque date sera conservée.") # Logs de débogage
+            df_standardized = df_standardized[~df_standardized.index.duplicated(keep='last')]
+
+
+        # Remplir les valeurs NaN restantes dans les colonnes numériques (méthode ffill puis bfill)
+        # Appliquer uniquement aux colonnes qui existent dans le DataFrame standardisé
+        cols_to_fill = [col for col in ['Ouverture', 'Plus_Haut', 'Plus_Bas', 'Prix', 'Volume'] if col in df_standardized.columns]
+
+        for col in cols_to_fill:
+             nan_before = df_standardized[col].isnull().sum()
+             if nan_before > 0:
+                 df_standardized[col] = df_standardized[col].ffill() # Remplir avant
+                 df_standardized[col] = df_standardized[col].bfill() # Remplir arrière (pour les NaN au début)
+                 nan_after = df_standardized[col].isnull().sum()
+                 if nan_after < nan_before:
+                     print(f"{nan_before - nan_after} NaN dans '{col}' remplis par ffill/bfill.") # Logs de débogage
+                 if nan_after > 0:
+                      print(f"Attention: Il reste {nan_after} NaN dans la colonne '{col}' après ffill/bfill. Vérifiez vos données source, surtout au début et à la fin de la série.") # Logs de débogage
+                      # On pourrait choisir de retourner None ici si on ne veut aucun NaN final
+
+        # Vérifier si la colonne 'Prix' (Close standardisée) est présente et n'est pas entièrement NaN après remplissage
+        if 'Prix' not in df_standardized.columns or df_standardized['Prix'].isnull().all():
+             print("Erreur critique: La colonne 'Close' ('Prix' standardisé) est manquante ou contient uniquement des NaN après traitement.") # Logs de débogage
+             # Afficher l'erreur dans l'UI sera géré dans app.py
+             return None
+
+
+        print("Chargement et traitement des données réussis.") # Logs de débogage
+        print(f"DataFrame standardisé final shape: {df_standardized.shape}") # Logs de débogage
+        # print(f"DataFrame standardisé final head:\n{df_standardized.head()}") # Logs de débogage
+
+
+        return df_standardized[['Ouverture', 'Plus_Haut', 'Plus_Bas', 'Prix', 'Volume']] # Retourner les colonnes standardisées
 
     except Exception as e:
-        print(f"Une erreur inattendue s'est produite pendant le traitement : {e}") # Debug print
-        # Afficher un message d'erreur plus spécifique si possible
-        if "No sheet named" in str(e):
-             print("Erreur: Vérifiez que le fichier Excel contient au moins une feuille de calcul valide.") # Debug print
+        # Capturer toute autre erreur inattendue
+        print(f"Une erreur inattendue s'est produite pendant le traitement : {e}") # Logs de débogage
+        # Afficher l'erreur dans l'UI sera géré dans app.py
         return None
+
+# data/__init__.py reste vide
