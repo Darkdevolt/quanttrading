@@ -1,74 +1,92 @@
 import streamlit as st
-import PyPDF2
 import pandas as pd
+from io import StringIO
 import re
-from io import BytesIO
 
 # Configuration de la page
 st.set_page_config(layout="wide", page_title="Analyse BRVM", page_icon="📈")
 st.title("📊 Analyse du Bulletin Officiel de la BRVM")
 
-# Fonctions d'extraction
-def extract_text_from_pdf(uploaded_file):
-    """Extrait le texte brut du PDF."""
-    pdf_reader = PyPDF2.PdfReader(BytesIO(uploaded_file.read()))
-    return "\n".join(page.extract_text() for page in pdf_reader.pages)
+# Données brutes
+raw_data = """
+BRVM COMPOSITE290,62Variation Jour1,00 %
+Variation annuelle5,29 %
+BRVM PRESTIGE121,60Variation Jour0,59 %
+Variation annuelle5,89 %
+... (toutes vos données brutes ici) ...
+"""
 
-def parse_indices(text):
-    """Extrait les indices principaux avec leurs variations."""
-    pattern = r"(BRVM \w+)\n([\d,]+)\nVariation Jour\n([\d,]+ %)\nVariation annuelle\n([\d,]+ %)"
-    return {m[0]: {"Valeur": m[1], "Var. Jour": m[2], "Var. Annuelle": m[3]} 
-            for m in re.findall(pattern, text)}
+# Fonctions de traitement
+def parse_main_indices(data):
+    pattern = r"(BRVM \w+)([\d,]+)Variation Jour([\d,]+ %)Variation annuelle([\d,]+ %)"
+    matches = re.findall(pattern, data.replace("\n", ""))
+    return pd.DataFrame([{
+        "Indice": m[0].strip(),
+        "Valeur": float(m[1].replace(",", ".")),
+        "Var. Jour": m[2].strip(),
+        "Var. Annuelle": m[3].strip()
+    } for m in matches])
 
-def parse_top_movements(text, movement_type):
-    """Extrait les tops hausses/baisses."""
+def parse_top_movements(data, movement_type):
     section_pattern = {
         "hausses": r"PLUS FORTES HAUSSES(.*?)PLUS FORTES BAISSES",
-        "baisses": r"PLUS FORTES BAISSES(.*?)(?:\n\n|Base =)"
+        "baisses": r"PLUS FORTES BAISSES(.*?)(?:Base =)"
     }[movement_type]
     
-    section = re.search(section_pattern, text, re.DOTALL)
+    section = re.search(section_pattern, data, re.DOTALL)
     if not section:
-        return []
+        return pd.DataFrame()
     
     lines = [line.strip() for line in section.group(1).split("\n") if line.strip()]
-    return [{
+    return pd.DataFrame([{
         "Titre": lines[i],
         "Cours": lines[i+1],
         "Var. Jour": lines[i+2],
         "Var. Annuelle": lines[i+3]
-    } for i in range(0, len(lines), 4) if i+3 < len(lines)]
+    } for i in range(0, len(lines), 4) if i+3 < len(lines)])
+
+def parse_sector_indices(data):
+    pattern = r"BRVM - (\w+)(\d+)([\d,]+)([\d,-]+ %)([\d,-]+ %)([\d,]+)([\d,]+)([\d,]+)"
+    matches = re.findall(pattern, data.replace("\n", ""))
+    return pd.DataFrame([{
+        "Secteur": m[0],
+        "Nb Sociétés": int(m[1]),
+        "Valeur": float(m[2].replace(",", ".")),
+        "Var. Jour": m[3],
+        "Var. Annuelle": m[4],
+        "Volume": int(m[5].replace(",", "")),
+        "Valeur Transigée": int(m[6].replace(",", "")),
+        "PER": float(m[7].replace(",", ".")) if m[7] else None
+    } for m in matches])
 
 # Interface Streamlit
-uploaded_file = st.file_uploader("Téléverser le bulletin BRVM (PDF)", type="pdf")
+tab1, tab2, tab3 = st.tabs(["Indices Principaux", "Mouvements des Titres", "Indices Sectoriels"])
 
-if uploaded_file:
-    text = extract_text_from_pdf(uploaded_file)
-    
-    # Section 1: Indices Principaux
+with tab1:
     st.header("📊 Indices Clés")
-    indices = parse_indices(text)
-    if indices:
-        cols = st.columns(len(indices))
-        for idx, (name, data) in enumerate(indices.items()):
+    indices_df = parse_main_indices(raw_data)
+    if not indices_df.empty:
+        cols = st.columns(len(indices_df))
+        for idx, row in indices_df.iterrows():
             with cols[idx]:
                 st.metric(
-                    label=name,
-                    value=data["Valeur"],
-                    delta=data["Var. Jour"],
-                    help=f"Variation annuelle: {data['Var. Annuelle']}"
+                    label=row["Indice"],
+                    value=row["Valeur"],
+                    delta=row["Var. Jour"],
+                    help=f"Variation annuelle: {row['Var. Annuelle']}"
                 )
     else:
-        st.warning("Aucun indice trouvé dans le document.")
+        st.warning("Aucun indice trouvé dans les données.")
 
-    # Section 2: Mouvements des Titres
+with tab2:
     st.header("📌 Top Mouvements")
-    tab_hausses, tab_baisses = st.tabs(["🚀 Hausses", "🔻 Baisses"])
+    col1, col2 = st.columns(2)
     
-    with tab_hausses:
-        hausses = parse_top_movements(text, "hausses")
+    with col1:
+        st.subheader("🚀 Hausses")
+        hausses_df = parse_top_movements(raw_data, "hausses")
         st.dataframe(
-            pd.DataFrame(hausses),
+            hausses_df,
             use_container_width=True,
             hide_index=True,
             column_config={
@@ -77,10 +95,11 @@ if uploaded_file:
             }
         )
     
-    with tab_baisses:
-        baisses = parse_top_movements(text, "baisses")
+    with col2:
+        st.subheader("🔻 Baisses")
+        baisses_df = parse_top_movements(raw_data, "baisses")
         st.dataframe(
-            pd.DataFrame(baisses),
+            baisses_df,
             use_container_width=True,
             hide_index=True,
             column_config={
@@ -89,11 +108,32 @@ if uploaded_file:
             }
         )
 
-    # Section 3: Données Brutes (Optionnel)
-    with st.expander("Voir les données brutes"):
-        st.text(text[:5000] + "..." if len(text) > 5000 else text)
-else:
-    st.info("Veuillez téléverser un fichier PDF pour commencer l'analyse.")
+with tab3:
+    st.header("🏭 Indices Sectoriels")
+    sector_df = parse_sector_indices(raw_data)
+    if not sector_df.empty:
+        st.dataframe(
+            sector_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "Var. Jour": st.column_config.NumberColumn(format="%+.2f %%"),
+                "Var. Annuelle": st.column_config.NumberColumn(format="%+.2f %%"),
+                "Valeur Transigée": st.column_config.NumberColumn(format="%,d"),
+                "PER": st.column_config.NumberColumn(format="%.2f")
+            }
+        )
+        
+        # Graphique des variations
+        st.subheader("Variations par Secteur")
+        selected_metric = st.selectbox("Choisir la métrique", ["Var. Jour", "Var. Annuelle"])
+        st.bar_chart(sector_df.set_index("Secteur")[selected_metric].str.replace("%", "").astype(float))
+    else:
+        st.warning("Aucun indice sectoriel trouvé dans les données.")
+
+# Section des données brutes
+with st.expander("📄 Voir les données brutes"):
+    st.text(raw_data[:5000] + "..." if len(raw_data) > 5000 else raw_data)
 
 # Pied de page
 st.caption("Application développée pour l'analyse des bulletins BRVM | Données du 6 mai 2025")
