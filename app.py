@@ -1,139 +1,154 @@
 import streamlit as st
 import pandas as pd
-from io import StringIO
-import re
+import plotly.express as px
+from datetime import datetime
+import pytz
 
 # Configuration de la page
-st.set_page_config(layout="wide", page_title="Analyse BRVM", page_icon="📈")
-st.title("📊 Analyse du Bulletin Officiel de la BRVM")
+st.set_page_config(page_title="Analyse BRVM", layout="wide", page_icon="📈")
 
-# Données brutes
-raw_data = """
-BRVM COMPOSITE290,62Variation Jour1,00 %
-Variation annuelle5,29 %
-BRVM PRESTIGE121,60Variation Jour0,59 %
-Variation annuelle5,89 %
-... (toutes vos données brutes ici) ...
-"""
+# Titre de l'application
+st.title("📊 Plateforme d'Analyse des Marchés BRVM")
 
-# Fonctions de traitement
-def parse_main_indices(data):
-    pattern = r"(BRVM \w+)([\d,]+)Variation Jour([\d,]+ %)Variation annuelle([\d,]+ %)"
-    matches = re.findall(pattern, data.replace("\n", ""))
-    return pd.DataFrame([{
-        "Indice": m[0].strip(),
-        "Valeur": float(m[1].replace(",", ".")),
-        "Var. Jour": m[2].strip(),
-        "Var. Annuelle": m[3].strip()
-    } for m in matches])
-
-def parse_top_movements(data, movement_type):
-    section_pattern = {
-        "hausses": r"PLUS FORTES HAUSSES(.*?)PLUS FORTES BAISSES",
-        "baisses": r"PLUS FORTES BAISSES(.*?)(?:Base =)"
-    }[movement_type]
+# Fonction pour charger les données (simulée ici - en pratique, vous utiliseriez une connexion à votre base de données cloud)
+@st.cache_data(ttl=3600)  # Cache les données pendant 1 heure
+def load_data():
+    # Ici vous implémenteriez la logique pour charger depuis votre source cloud
+    # Exemple avec des données simulées basées sur le PDF
+    indices_data = {
+        "Indice": ["BRVM COMPOSITE", "BRVM PRESTIGE", "BRVM 30"],
+        "Valeur": [290.62, 121.60, 146.21],
+        "Var. Jour": [1.00, 0.59, 1.16],
+        "Var. Annuelle": [5.29, 5.89, 5.38]
+    }
     
-    section = re.search(section_pattern, data, re.DOTALL)
-    if not section:
-        return pd.DataFrame()
+    actions_data = {
+        "Titre": ["UNIWAX CI", "ECOBANK TRANS. INCORP. TG", "AFRICA GLOBAL LOGISTICS CI"],
+        "Symbole": ["UNXC", "ETIT", "SDSC"],
+        "Secteur": ["Industriels", "Services Financiers", "Logistique"],
+        "Cours": [515, 16, 1450],
+        "Var. Jour": [7.29, 6.67, 6.23],
+        "Var. Annuelle": [25.61, 0.00, 8.21],
+        "Volume": [11317, 91891, 8035],
+        "Capitalisation (M FCFA)": [12500, 3200, 45000]
+    }
     
-    lines = [line.strip() for line in section.group(1).split("\n") if line.strip()]
-    return pd.DataFrame([{
-        "Titre": lines[i],
-        "Cours": lines[i+1],
-        "Var. Jour": lines[i+2],
-        "Var. Annuelle": lines[i+3]
-    } for i in range(0, len(lines), 4) if i+3 < len(lines)])
+    return pd.DataFrame(indices_data), pd.DataFrame(actions_data)
 
-def parse_sector_indices(data):
-    pattern = r"BRVM - (\w+)(\d+)([\d,]+)([\d,-]+ %)([\d,-]+ %)([\d,]+)([\d,]+)([\d,]+)"
-    matches = re.findall(pattern, data.replace("\n", ""))
-    return pd.DataFrame([{
-        "Secteur": m[0],
-        "Nb Sociétés": int(m[1]),
-        "Valeur": float(m[2].replace(",", ".")),
-        "Var. Jour": m[3],
-        "Var. Annuelle": m[4],
-        "Volume": int(m[5].replace(",", "")),
-        "Valeur Transigée": int(m[6].replace(",", "")),
-        "PER": float(m[7].replace(",", ".")) if m[7] else None
-    } for m in matches])
+# Chargement des données
+indices_df, actions_df = load_data()
 
-# Interface Streamlit
-tab1, tab2, tab3 = st.tabs(["Indices Principaux", "Mouvements des Titres", "Indices Sectoriels"])
+# Sidebar avec filtres
+with st.sidebar:
+    st.header("Filtres")
+    secteur = st.multiselect(
+        "Secteur d'activité",
+        options=actions_df["Secteur"].unique(),
+        default=actions_df["Secteur"].unique()
+    )
+    
+    variation_min, variation_max = st.slider(
+        "Variation journalière (%)",
+        min_value=-10.0,
+        max_value=10.0,
+        value=(-10.0, 10.0)
+    
+    date_analyse = st.date_input("Date d'analyse", datetime.now(pytz.timezone('Africa/Abidjan'))
+
+# Section des indices
+st.header("📈 Performance des Indices")
+col1, col2, col3 = st.columns(3)
+
+with col1:
+    st.metric("BRVM COMPOSITE", 
+              f"{indices_df[indices_df['Indice']=='BRVM COMPOSITE']['Valeur'].values[0]}", 
+              f"{indices_df[indices_df['Indice']=='BRVM COMPOSITE']['Var. Jour'].values[0]}%")
+
+with col2:
+    st.metric("BRVM PRESTIGE", 
+              f"{indices_df[indices_df['Indice']=='BRVM PRESTIGE']['Valeur'].values[0]}", 
+              f"{indices_df[indices_df['Indice']=='BRVM PRESTIGE']['Var. Jour'].values[0]}%")
+
+with col3:
+    st.metric("BRVM 30", 
+              f"{indices_df[indices_df['Indice']=='BRVM 30']['Valeur'].values[0]}", 
+              f"{indices_df[indices_df['Indice']=='BRVM 30']['Var. Jour'].values[0]}%")
+
+# Graphique d'évolution des indices
+st.plotly_chart(
+    px.line(indices_df, x="Indice", y="Valeur", title="Valeur des Indices"),
+    use_container_width=True
+)
+
+# Section des actions
+st.header("📊 Analyse des Actions")
+
+# Appliquer les filtres
+filtered_df = actions_df[
+    (actions_df["Secteur"].isin(secteur)) & 
+    (actions_df["Var. Jour"] >= variation_min) & 
+    (actions_df["Var. Jour"] <= variation_max)
+]
+
+# Afficher le dataframe filtré
+st.dataframe(filtered_df.sort_values("Var. Jour", ascending=False), 
+             use_container_width=True,
+             column_config={
+                 "Var. Jour": st.column_config.ProgressColumn(
+                     "Variation Jour",
+                     format="%.2f%%",
+                     min_value=-10,
+                     max_value=10,
+                 )
+             })
+
+# Visualisations
+col1, col2 = st.columns(2)
+
+with col1:
+    st.plotly_chart(
+        px.bar(filtered_df, 
+               x="Symbole", 
+               y="Var. Jour", 
+               color="Var. Jour",
+               title="Variation Journalière par Action"),
+        use_container_width=True
+    )
+
+with col2:
+    st.plotly_chart(
+        px.scatter(filtered_df, 
+                  x="Volume", 
+                  y="Var. Jour", 
+                  size="Capitalisation (M FCFA)",
+                  color="Secteur",
+                  hover_name="Titre",
+                  title="Volume vs Variation"),
+        use_container_width=True
+    )
+
+# Section des plus fortes hausses/baisses
+st.header("🎢 Performances Extrêmes")
+
+tab1, tab2 = st.tabs(["Plus fortes hausses", "Plus fortes baisses"])
 
 with tab1:
-    st.header("📊 Indices Clés")
-    indices_df = parse_main_indices(raw_data)
-    if not indices_df.empty:
-        cols = st.columns(len(indices_df))
-        for idx, row in indices_df.iterrows():
-            with cols[idx]:
-                st.metric(
-                    label=row["Indice"],
-                    value=row["Valeur"],
-                    delta=row["Var. Jour"],
-                    help=f"Variation annuelle: {row['Var. Annuelle']}"
-                )
-    else:
-        st.warning("Aucun indice trouvé dans les données.")
+    top_gainers = filtered_df.nlargest(5, "Var. Jour")
+    st.dataframe(top_gainers[["Titre", "Symbole", "Var. Jour", "Var. Annuelle"]])
 
 with tab2:
-    st.header("📌 Top Mouvements")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.subheader("🚀 Hausses")
-        hausses_df = parse_top_movements(raw_data, "hausses")
-        st.dataframe(
-            hausses_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Var. Jour": st.column_config.NumberColumn(format="%+.2f %%"),
-                "Var. Annuelle": st.column_config.NumberColumn(format="%+.2f %%")
-            }
-        )
-    
-    with col2:
-        st.subheader("🔻 Baisses")
-        baisses_df = parse_top_movements(raw_data, "baisses")
-        st.dataframe(
-            baisses_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Var. Jour": st.column_config.NumberColumn(format="%+.2f %%"),
-                "Var. Annuelle": st.column_config.NumberColumn(format="%+.2f %%")
-            }
-        )
+    top_losers = filtered_df.nsmallest(5, "Var. Jour")
+    st.dataframe(top_losers[["Titre", "Symbole", "Var. Jour", "Var. Annuelle"]])
 
-with tab3:
-    st.header("🏭 Indices Sectoriels")
-    sector_df = parse_sector_indices(raw_data)
-    if not sector_df.empty:
-        st.dataframe(
-            sector_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Var. Jour": st.column_config.NumberColumn(format="%+.2f %%"),
-                "Var. Annuelle": st.column_config.NumberColumn(format="%+.2f %%"),
-                "Valeur Transigée": st.column_config.NumberColumn(format="%,d"),
-                "PER": st.column_config.NumberColumn(format="%.2f")
-            }
-        )
-        
-        # Graphique des variations
-        st.subheader("Variations par Secteur")
-        selected_metric = st.selectbox("Choisir la métrique", ["Var. Jour", "Var. Annuelle"])
-        st.bar_chart(sector_df.set_index("Secteur")[selected_metric].str.replace("%", "").astype(float))
-    else:
-        st.warning("Aucun indice sectoriel trouvé dans les données.")
-
-# Section des données brutes
-with st.expander("📄 Voir les données brutes"):
-    st.text(raw_data[:5000] + "..." if len(raw_data) > 5000 else raw_data)
+# Section des indicateurs techniques
+st.header("📊 Indicateurs Techniques")
+st.write("""
+- **PER moyen du marché**: 11.15
+- **Taux de rendement moyen**: 7.92%
+- **Taux de rentabilité moyen**: 9.38%
+- **Ratio de liquidité moyen**: 7.86
+""")
 
 # Pied de page
-st.caption("Application développée pour l'analyse des bulletins BRVM | Données du 6 mai 2025")
+st.divider()
+st.caption(f"Dernière mise à jour: {datetime.now(pytz.timezone('Africa/Abidjan')).strftime('%d/%m/%Y %H:%M')} | Source: BRVM")
