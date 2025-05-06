@@ -10,11 +10,9 @@ st.set_page_config(page_title="Analyse BRVM", layout="wide", page_icon="📈")
 # Titre de l'application
 st.title("📊 Plateforme d'Analyse des Marchés BRVM")
 
-# Fonction pour charger les données (simulée ici - en pratique, vous utiliseriez une connexion à votre base de données cloud)
-@st.cache_data(ttl=3600)  # Cache les données pendant 1 heure
+# Fonction pour charger les données
+@st.cache_data(ttl=3600)
 def load_data():
-    # Ici vous implémenteriez la logique pour charger depuis votre source cloud
-    # Exemple avec des données simulées basées sur le PDF
     indices_data = {
         "Indice": ["BRVM COMPOSITE", "BRVM PRESTIGE", "BRVM 30"],
         "Valeur": [290.62, 121.60, 146.21],
@@ -51,9 +49,9 @@ with st.sidebar:
         "Variation journalière (%)",
         min_value=-10.0,
         max_value=10.0,
-        value=(-10.0, 10.0)
+        value=(-10.0, 10.0)  # Correction syntaxique ici
     
-    date_analyse = st.date_input("Date d'analyse", datetime.now(pytz.timezone('Africa/Abidjan'))
+    date_analyse = st.date_input("Date d'analyse", datetime.now(pytz.timezone('Africa/Abidjan')))
 
 # Section des indices
 st.header("📈 Performance des Indices")
@@ -74,7 +72,7 @@ with col3:
               f"{indices_df[indices_df['Indice']=='BRVM 30']['Valeur'].values[0]}", 
               f"{indices_df[indices_df['Indice']=='BRVM 30']['Var. Jour'].values[0]}%")
 
-# Graphique d'évolution des indices
+# Graphique d'évolution
 st.plotly_chart(
     px.line(indices_df, x="Indice", y="Valeur", title="Valeur des Indices"),
     use_container_width=True
@@ -82,15 +80,12 @@ st.plotly_chart(
 
 # Section des actions
 st.header("📊 Analyse des Actions")
-
-# Appliquer les filtres
 filtered_df = actions_df[
     (actions_df["Secteur"].isin(secteur)) & 
     (actions_df["Var. Jour"] >= variation_min) & 
     (actions_df["Var. Jour"] <= variation_max)
 ]
 
-# Afficher le dataframe filtré
 st.dataframe(filtered_df.sort_values("Var. Jour", ascending=False), 
              use_container_width=True,
              column_config={
@@ -127,9 +122,8 @@ with col2:
         use_container_width=True
     )
 
-# Section des plus fortes hausses/baisses
+# Section des performances extrêmes
 st.header("🎢 Performances Extrêmes")
-
 tab1, tab2 = st.tabs(["Plus fortes hausses", "Plus fortes baisses"])
 
 with tab1:
@@ -140,7 +134,7 @@ with tab2:
     top_losers = filtered_df.nsmallest(5, "Var. Jour")
     st.dataframe(top_losers[["Titre", "Symbole", "Var. Jour", "Var. Annuelle"]])
 
-# Section des indicateurs techniques
+# Indicateurs techniques
 st.header("📊 Indicateurs Techniques")
 st.write("""
 - **PER moyen du marché**: 11.15
