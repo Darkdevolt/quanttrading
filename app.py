@@ -1,111 +1,92 @@
-# app.py
 import streamlit as st
+import pdfplumber
 import pandas as pd
-from utils import parse_boc_pdf, classify_titles, calculate_intrinsic_value, gordon_shapiro_value
+import re
+from io import BytesIO
 
-st.set_page_config(page_title="Analyse BRVM", layout="wide")
-st.title("Analyse automatique des titres cotés BRVM")
+# Titre de l'application
+st.title("Analyse des Bulletins Officiels de la Côte BRVM")
 
-# 1. Upload du BOC
-uploaded_file = st.file_uploader("Uploader un Bulletin Officiel de la Cote (BOC)", type=["pdf"])
-
-if uploaded_file:
-    with st.spinner("Extraction des données en cours..."):
-        try:
-            df_raw = parse_boc_pdf(uploaded_file)
-        except Exception as e:
-            st.error(f"Erreur lors du parsing du PDF : {e}")
-            st.stop()
-
-    if df_raw.empty:
-        st.warning("Aucune donnée extraite du PDF.")
-        st.stop()
-
-    st.success("Extraction brute terminée.")
-
-    # 2. Choix des colonnes essentielles
-    st.subheader("Mapper les colonnes du tableau extrait")
-    cols = df_raw.columns.tolist()
-    mapping = {}
-    required_fields = {
-        'symbole': 'Symbole (ex: UNXC, TPBF.O10)',
-        'titre': 'Intitulé du titre',
-        'cours': 'Cours actuel',
-        'per': 'PER (optionnel)',
-        'dernier_dividende': 'Dernier dividende (optionnel)',
-        'bnpa': 'BNPA (optionnel)'
+# Fonction pour extraire les données du PDF
+def extract_data_from_pdf(uploaded_file):
+    data = {
+        "Actions": [],
+        "Obligations": [],
+        "Indices": [],
+        "OPCVM": []
     }
-    for field, label in required_fields.items():
-        mapping[field] = st.selectbox(
-            label,
-            options=[None] + cols,
-            index=0,
-            help=f"Choisir la colonne correspondant à {label}"
-        )
+    
+    with pdfplumber.open(uploaded_file) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text()
+            
+            # Extraction des actions (simplifié)
+            if "ACTIONS" in text:
+                action_lines = re.findall(r'([A-Z]{2,5})\s+(.+?)\s+(\d[\d,.]*)\s+([-+]?\d*\.\d+%)', text)
+                for line in action_lines:
+                    data["Actions"].append({
+                        "Symbole": line[0],
+                        "Titre": line[1],
+                        "Cours": line[2],
+                        "Variation": line[3]
+                    })
+            
+            # Extraction des obligations (simplifié)
+            if "OBLIGATIONS D'ETAT" in text:
+                obligation_lines = re.findall(r'([A-Z]{2,5}\.\w+)\s+(.+?)\s+(\d[\d,.]*)\s+(\d[\d,.]*)', text)
+                for line in obligation_lines:
+                    data["Obligations"].append({
+                        "Code": line[0],
+                        "Description": line[1],
+                        "Valeur Nominale": line[2],
+                        "Cours": line[3]
+                    })
+    
+    return data
 
-    # Vérification mapping minimal
-    if not mapping['symbole'] or not mapping['titre'] or not mapping['cours']:
-        st.error("Vous devez mapper au moins les colonnes 'symbole', 'titre' et 'cours'.")
-        st.stop()
+# Téléchargement du fichier
+uploaded_file = st.file_uploader("Téléchargez le bulletin BRVM (PDF)", type="pdf")
 
-    # 3. Création du DataFrame structuré
-    df = pd.DataFrame()
-    df['symbole'] = df_raw[mapping['symbole']]
-    df['titre'] = df_raw[mapping['titre']]
-    # Conversion du cours en float
-    df['cours'] = df_raw[mapping['cours']].astype(str).str.replace(',', '').astype(float)
-    # Champs optionnels
-    if mapping['per']:
-        df['per'] = pd.to_numeric(df_raw[mapping['per']], errors='coerce')
-    if mapping['dernier_dividende']:
-        df['dernier_dividende'] = pd.to_numeric(df_raw[mapping['dernier_dividende']], errors='coerce')
-    if mapping['bnpa']:
-        df['bnpa'] = pd.to_numeric(df_raw[mapping['bnpa']], errors='coerce')
-
-    # 4. Classification des titres
-    df = classify_titles(df)
-
-    # 5. Affichage et filtrage
-    title_type = st.selectbox(
-        "Choisir le type de titre",
-        ["Tous", "Propriété (Actions)", "Créance (Obligations)"]
+if uploaded_file is not None:
+    # Extraction des données
+    data = extract_data_from_pdf(BytesIO(uploaded_file.read()))
+    
+    # Sélection du type de données à afficher
+    data_type = st.selectbox(
+        "Sélectionnez le type de données à afficher",
+        ["Actions", "Obligations", "Indices", "OPCVM"]
     )
-    df_display = df.copy()
-    if title_type != "Tous":
-        df_display = df[df['type'] == title_type]
-
-    st.dataframe(df_display)
-
-    # 6. Valorisation actions
-    if title_type == "Propriété (Actions)":
-        st.subheader("Calcul de la valeur intrinsèque des actions")
-
-        market_per = st.number_input(
-            "PER du marché ou secteur (par défaut : 12)", value=12.0
-        )
-        required_return = st.slider(
-            "Taux de rentabilité exigé (r)", min_value=0.01, max_value=0.30,
-            step=0.005, value=0.12
-        )
-        growth_rate = st.slider(
-            "Taux de croissance (g)", min_value=0.00, max_value=0.20,
-            step=0.005, value=0.05
-        )
-
-        df_actions = df_display.copy()
-        df_actions['valeur_PER'] = df_actions.apply(
-            lambda x: calculate_intrinsic_value(x, market_per), axis=1
-        )
-        df_actions['valeur_GS'] = df_actions.apply(
-            lambda x: gordon_shapiro_value(x, required_return, growth_rate), axis=1
-        )
-        df_actions['% sous-évaluation'] = (
-            (df_actions['valeur_GS'] - df_actions['cours']) / df_actions['valeur_GS'] * 100
-        )
-
-        under_valued = df_actions[df_actions['cours'] < df_actions['valeur_GS']]
-
-        st.write("### Actions potentiellement sous-évaluées selon Gordon-Shapiro")
-        st.dataframe(
-            under_valued.sort_values(by='% sous-évaluation', ascending=False)
-        )
+    
+    # Affichage des données
+    if data[data_type]:
+        df = pd.DataFrame(data[data_type])
+        st.dataframe(df)
+        
+        # Options d'analyse
+        st.subheader("Options d'analyse")
+        
+        if data_type == "Actions":
+            selected_stock = st.selectbox(
+                "Sélectionnez une action pour analyse détaillée",
+                [a["Symbole"] for a in data["Actions"]]
+            )
+            
+            # Afficher les détails de l'action sélectionnée
+            stock_details = next((a for a in data["Actions"] if a["Symbole"] == selected_stock), None)
+            if stock_details:
+                st.write(f"**Détails de {selected_stock}**")
+                st.json(stock_details)
+                
+        elif data_type == "Obligations":
+            selected_bond = st.selectbox(
+                "Sélectionnez une obligation pour analyse détaillée",
+                [o["Code"] for o in data["Obligations"]]
+            )
+            
+            # Afficher les détails de l'obligation sélectionnée
+            bond_details = next((o for o in data["Obligations"] if o["Code"] == selected_bond), None)
+            if bond_details:
+                st.write(f"**Détails de {selected_bond}**")
+                st.json(bond_details)
+    else:
+        st.warning(f"Aucune donnée {data_type} trouvée dans le document.")
