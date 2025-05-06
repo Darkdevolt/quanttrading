@@ -1,152 +1,131 @@
 import streamlit as st
+import pdfplumber
 import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import plotly.express as px
+import base64
+import tempfile
 from io import BytesIO
-from datetime import datetime
+import datetime
 
-# Indicateurs techniques (SMA, RSI, MACD)
-def calcul_sma(series, window):
-    return series.rolling(window=window, min_periods=1).mean()
+# Configuration initiale
+st.set_page_config(layout="wide", page_title="BRVM Trading Expert", page_icon="📈")
 
-def calcul_rsi(series, window=14):
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
-    avg_gain = gain.rolling(window=window, min_periods=window).mean()
-    avg_loss = loss.rolling(window=window, min_periods=window).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.fillna(0)
+# Fonctions de traitement PDF
+def parse_equity_data(text):
+    equities = []
+    current_section = None
+    lines = text.split('\n')
+    
+    for line in lines:
+        if 'ACTIONS' in line:
+            current_section = 'actions'
+        elif 'OBLIGATIONS' in line:
+            current_section = 'obligations'
+        
+        if current_section == 'actions' and 'CB' in line:
+            parts = line.split()
+            if len(parts) >= 12:
+                try:
+                    equity = {
+                        'Symbole': parts[1],
+                        'Titre': ' '.join(parts[2:-10]),
+                        'Cours': float(parts[-10].replace(' ', '')),
+                        'Var. Jour': float(parts[-9].replace('%', '')),
+                        'Var. annuelle': float(parts[-8].replace('%', '')),
+                        'Dividende': float(parts[-7]),
+                        'PER': float(parts[-6]),
+                        'Secteur': parts[0]
+                    }
+                    equities.append(equity)
+                except:
+                    continue
+    return pd.DataFrame(equities)
 
-def calcul_macd(series, fast=12, slow=26, signal=9):
-    ema_fast = series.ewm(span=fast, adjust=False).mean()
-    ema_slow = series.ewm(span=slow, adjust=False).mean()
-    macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
-    hist = macd_line - signal_line
-    return pd.DataFrame({'MACD': macd_line, 'Signal': signal_line, 'Histogram': hist})
+def parse_pdf(file):
+    with pdfplumber.open(file) as pdf:
+        text = ""
+        for page in pdf.pages:
+            text += page.extract_text()
+    return parse_equity_data(text)
 
-# Backtest simplifié BRVM avec variation max et délai de règlement
+# Modèles de valuation
+def gordon_model(dividend, growth, required_return):
+    if required_return <= growth:
+        return 0
+    return (dividend * (1 + growth/100)) / ((required_return/100 - growth/100))
 
-def run_backtest(df, capital, commission, stop_loss_pct, take_profit_pct, variation_cap, settlement_days):
-    data = df.copy().reset_index(drop=True)
-    n = len(data)
-    capital_init = capital
-    shares = 0
-    cash = capital
-    portfolio = []
-    prev_price = data.loc[0, 'Close']
+def shapiro_model(dividend, growth, required_return, sector_per):
+    gordon = gordon_model(dividend, growth, required_return)
+    return gordon * (sector_per / (sector_per + (required_return/100 - growth/100)))
 
-    position_open_day = -settlement_days - 1  # valeur initiale en dehors du range
-    buy_price = 0
+# Interface Streamlit
+def main():
+    st.title("📊 BRVM Trading Expert System")
+    
+    # Upload PDF
+    uploaded_file = st.file_uploader("Déposer le bulletin officiel (PDF)", type="pdf")
+    
+    if uploaded_file:
+        # Sauvegarde temporaire
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            tmp_file.write(uploaded_file.getvalue())
+            df = parse_pdf(tmp_file.name)
+        
+        # Section d'analyse
+        st.sidebar.header("Paramètres d'Analyse")
+        required_return = st.sidebar.slider("Taux de rendement requis (%)", 5.0, 20.0, 7.92)
+        margin_safety = st.sidebar.slider("Marge de sécurité (%)", 0, 30, 15)
+        selected_sector = st.sidebar.selectbox("Filtrer par secteur", df['Secteur'].unique())
+        
+        # Calcul des valuations
+        df['Valeur Gordon'] = df.apply(lambda x: gordon_model(x['Dividende'], x['Var. annuelle'], required_return), axis=1)
+        df['Valeur Shapiro'] = df.apply(lambda x: shapiro_model(x['Dividende'], x['Var. annuelle'], required_return, x['PER']), axis=1)
+        df['Décotage'] = ((df[['Valeur Gordon', 'Valeur Shapiro']].mean(axis=1) - df['Cours']) / df['Cours']) * 100
+        
+        # Filtrage
+        filtered_df = df[df['Secteur'] == selected_sector]
+        undervalued = filtered_df[filtered_df['Décotage'] > margin_safety]
+        
+        # Affichage principal
+        col1, col2 = st.columns([1, 3])
+        
+        with col1:
+            st.subheader("🔍 Sélection de Valeur")
+            selected = st.selectbox("Choisir un titre", undervalued['Symbole'])
+            stock = undervalued[undervalued['Symbole'] == selected].iloc[0]
+            
+            st.metric("Cours actuel", f"{stock['Cours']:,} XOF")
+            st.metric("Valeur intrinsèque (moyenne)", 
+                      f"{(stock['Valeur Gordon'] + stock['Valeur Shapiro']) / 2:,.0f} XOF",
+                      delta=f"{stock['Décotage']:.1f}%")
+            
+            st.download_button(
+                label="💾 Sauvegarder l'analyse",
+                data=df.to_csv(index=False).encode('utf-8'),
+                file_name=f"brvm_analysis_{datetime.datetime.now().strftime('%Y%m%d')}.csv",
+                mime='text/csv'
+            )
+        
+        with col2:
+            st.subheader("📉 Top Opportunités d'Achat")
+            st.dataframe(
+                undervalued.sort_values('Décotage', ascending=False)[['Symbole', 'Cours', 'Valeur Gordon', 'Valeur Shapiro', 'Décotage']],
+                column_config={
+                    "Cours": st.column_config.NumberColumn(format="%,d XOF"),
+                    "Valeur Gordon": st.column_config.NumberColumn(format="%,d XOF"),
+                    "Valeur Shapiro": st.column_config.NumberColumn(format="%,d XOF"),
+                    "Décotage": st.column_config.NumberColumn(format="+%.1f %%")
+                },
+                height=500
+            )
+            
+            st.subheader("🧮 Comparaison des Modèles")
+            st.bar_chart(
+                undervalued.set_index('Symbole')[['Valeur Gordon', 'Valeur Shapiro', 'Cours']],
+                height=300
+            )
+    
+    else:
+        st.info("Veuillez uploader le bulletin officiel BRVM au format PDF")
 
-    for i, row in data.iterrows():
-        price = row['Close']
-        # limiter variation journalière
-        var = (price - prev_price) / prev_price if prev_price > 0 else 0
-        if abs(var) > variation_cap:
-            price = prev_price * (1 + np.sign(var) * variation_cap)
-        prev_price = price
-
-        signal = 0
-        if i > 0 and data.loc[i, 'SMA_20'] > data.loc[i, 'SMA_50'] and data.loc[i - 1, 'SMA_20'] <= data.loc[i - 1, 'SMA_50']:
-            signal = 1
-        if i > 0 and data.loc[i, 'SMA_20'] < data.loc[i, 'SMA_50'] and data.loc[i - 1, 'SMA_20'] >= data.loc[i - 1, 'SMA_50']:
-            signal = -1
-
-        # exécution ordre
-        if signal == 1 and cash > price:
-            shares = cash // price
-            cost = shares * price * (1 + commission)
-            cash -= cost
-            buy_price = price
-            position_open_day = i
-
-        # Ne peut vendre que si délai écoulé
-        if signal == -1 and shares > 0 and i - position_open_day >= settlement_days:
-            proceeds = shares * price * (1 - commission)
-            cash += proceeds
-            shares = 0
-
-        total = cash + shares * price
-        portfolio.append(total)
-
-    # calcul metrics
-    port = pd.Series(portfolio, index=df['Date'])
-    returns = port.pct_change().fillna(0)
-    cum_ret = (port / capital_init - 1) * 100
-    max_dd = (port.cummax() - port).max() / port.cummax().max() * 100
-    sharpe = (returns.mean() / returns.std()) * np.sqrt(252) if returns.std() > 0 else np.nan
-
-    return port, cum_ret, max_dd, sharpe
-
-# Fonctions d'affichage
-
-def afficher_statistiques(df):
-    st.subheader("Statistiques descriptives")
-    st.dataframe(df[['Open','High','Low','Close','Volume']].describe())
-
-def afficher_charts(df):
-    st.subheader("Cours et Moyennes Mobiles")
-    fig, ax = plt.subplots()
-    ax.plot(df['Date'], df['Close'], label='Close')
-    ax.plot(df['Date'], df['SMA_20'], label='SMA20')
-    ax.plot(df['Date'], df['SMA_50'], label='SMA50')
-    ax.legend(); st.pyplot(fig)
-
-    st.subheader("RSI (14)")
-    st.line_chart(df.set_index('Date')['RSI_14'])
-
-    st.subheader("MACD")
-    st.line_chart(df.set_index('Date')[['MACD','Signal']])
-    st.subheader("Histogramme MACD")
-    fig2, ax2 = plt.subplots()
-    ax2.bar(df['Date'], df['Histogram']); st.pyplot(fig2)
-
-# Traitement CSV
-
-def process_data(file):
-    df = pd.read_csv(file)
-    df.columns=df.columns.str.strip().str.lower()
-    req=['date','open','high','low','close','volume']
-    if any(col not in df.columns for col in req):
-        st.error('Colonnes manquantes: '+', '.join([c for c in req if c not in df.columns]))
-        return None
-    df=df.rename(columns={'date':'Date','open':'Open','high':'High','low':'Low','close':'Close','volume':'Volume'})
-    df['Date']=pd.to_datetime(df['Date'], errors='coerce')
-    df=df.dropna(subset=['Date']).sort_values('Date').reset_index(drop=True)
-    df['SMA_20']=calcul_sma(df['Close'],20)
-    df['SMA_50']=calcul_sma(df['Close'],50)
-    df['RSI_14']=calcul_rsi(df['Close'],14)
-    macd=calcul_macd(df['Close'])
-    df=pd.concat([df,macd],axis=1)
-    return df
-
-# UI principale
-st.title('Backtest BRVM - Analyse technique avancée')
-file=st.file_uploader('CSV (Date,Open,High,Low,Close,Volume)',type='csv')
-if file:
-    df=process_data(file)
-    if df is not None:
-        st.success('Données chargées')
-        st.subheader('Aperçu')
-        st.dataframe(df.head(10))
-
-        capital = st.sidebar.number_input('Capital initial', min_value=10000, value=100000)
-        commission = st.sidebar.slider('Commission %', min_value=0.0, max_value=1.0, value=0.5, step=0.01) / 100
-        stop_loss_pct = st.sidebar.slider('Stop Loss %', 0.0, 20.0, 5.0, step=0.5) / 100
-        take_profit_pct = st.sidebar.slider('Take Profit %', 0.0, 50.0, 10.0, step=0.5) / 100
-        variation_cap = 0.075  # variation max journalière (7.5%)
-        settlement_days = 3  # délai avant de pouvoir vendre
-
-        st.subheader("Backtest")
-        port, cum_ret, max_dd, sharpe = run_backtest(df, capital, commission, stop_loss_pct, take_profit_pct, variation_cap, settlement_days)
-        st.line_chart(port)
-        st.metric("Performance cumulée", f"{cum_ret.iloc[-1]:.2f}%")
-        st.metric("Max Drawdown", f"{max_dd:.2f}%")
-        st.metric("Sharpe Ratio", f"{sharpe:.2f}")
-
-        afficher_statistiques(df)
-        afficher_charts(df)
+if __name__ == "__main__":
+    main()
