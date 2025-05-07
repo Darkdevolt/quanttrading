@@ -1,148 +1,108 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-from datetime import datetime
-import pytz
+import requests
+from bs4 import BeautifulSoup
 
-# Configuration de la page
-st.set_page_config(page_title="Analyse BRVM", layout="wide", page_icon="📈")
+# URL de la page du palmarès Sikafinance BRVM
+SIKAFINANCE_URL = "https://www.sikafinance.com/marches/palmares"
 
-# Titre de l'application
-st.title("📊 Plateforme d'Analyse des Marchés BRVM")
+# --- Fonction de scraping (mise en cache avec Streamlit) ---
+@st.cache_data(ttl=3600) # Cache les données pendant 1 heure (3600 secondes)
+def scrape_brvm_palmares(url):
+    """
+    Scrape les données du palmarès (Top 5 Hausses et Baisses) depuis Sikafinance.
+    Retourne un dictionnaire de DataFrames pandas.
+    """
+    data = {}
+    try:
+        response = requests.get(url)
+        response.raise_for_status() # Lève une exception pour les codes d'état d'erreur (4xx ou 5xx)
 
-# Fonction pour charger les données
-@st.cache_data(ttl=3600)
-def load_data():
-    indices_data = {
-        "Indice": ["BRVM COMPOSITE", "BRVM PRESTIGE", "BRVM 30"],
-        "Valeur": [290.62, 121.60, 146.21],
-        "Var. Jour": [1.00, 0.59, 1.16],
-        "Var. Annuelle": [5.29, 5.89, 5.38]
-    }
-    
-    actions_data = {
-        "Titre": ["UNIWAX CI", "ECOBANK TRANS. INCORP. TG", "AFRICA GLOBAL LOGISTICS CI"],
-        "Symbole": ["UNXC", "ETIT", "SDSC"],
-        "Secteur": ["Industriels", "Services Financiers", "Logistique"],
-        "Cours": [515, 16, 1450],
-        "Var. Jour": [7.29, 6.67, 6.23],
-        "Var. Annuelle": [25.61, 0.00, 8.21],
-        "Volume": [11317, 91891, 8035],
-        "Capitalisation (M FCFA)": [12500, 3200, 45000]
-    }
-    
-    return pd.DataFrame(indices_data), pd.DataFrame(actions_data)
+        soup = BeautifulSoup(response.content, 'html.parser')
 
-# Chargement des données
-indices_df, actions_df = load_data()
+        # --- Recherche des tables ---
+        # Sikafinance utilise des titres h2 pour les sections "Top 5 Hausses" et "Top 5 Baisses"
+        # Nous allons chercher ces titres puis les tables associées.
 
-# Sidebar avec filtres
-with st.sidebar:
-    st.header("Filtres")
-    secteur = st.multiselect(
-        "Secteur d'activité",
-        options=actions_df["Secteur"].unique(),
-        default=actions_df["Secteur"].unique()
-    )
-    
-    variation_min, variation_max = st.slider(
-        "Variation journalière (%)",
-        min_value=-10.0,
-        max_value=10.0,
-        value=(-10.0, 10.0)  # Correction syntaxique ici
-    
-    date_analyse = st.date_input("Date d'analyse", datetime.now(pytz.timezone('Africa/Abidjan')))
+        # Top 5 Hausses
+        hausses_title = soup.find('h2', string='Top 5 Hausses')
+        if hausses_title:
+            hausses_table = hausses_title.find_next('table')
+            if hausses_table:
+                data['Top 5 Hausses'] = parse_table(hausses_table)
 
-# Section des indices
-st.header("📈 Performance des Indices")
-col1, col2, col3 = st.columns(3)
+        # Top 5 Baisses
+        baisses_title = soup.find('h2', string='Top 5 Baisses')
+        if baisses_title:
+            baisses_table = baisses_title.find_next('table')
+            if baisses_table:
+                data['Top 5 Baisses'] = parse_table(baisses_table)
 
-with col1:
-    st.metric("BRVM COMPOSITE", 
-              f"{indices_df[indices_df['Indice']=='BRVM COMPOSITE']['Valeur'].values[0]}", 
-              f"{indices_df[indices_df['Indice']=='BRVM COMPOSITE']['Var. Jour'].values[0]}%")
+    except requests.exceptions.RequestException as e:
+        st.error(f"Erreur lors de la récupération des données depuis Sikafinance : {e}")
+        return None
+    except Exception as e:
+        st.error(f"Une erreur est survenue lors du parsing des données : {e}")
+        return None
 
-with col2:
-    st.metric("BRVM PRESTIGE", 
-              f"{indices_df[indices_df['Indice']=='BRVM PRESTIGE']['Valeur'].values[0]}", 
-              f"{indices_df[indices_df['Indice']=='BRVM PRESTIGE']['Var. Jour'].values[0]}%")
+    return data
 
-with col3:
-    st.metric("BRVM 30", 
-              f"{indices_df[indices_df['Indice']=='BRVM 30']['Valeur'].values[0]}", 
-              f"{indices_df[indices_df['Indice']=='BRVM 30']['Var. Jour'].values[0]}%")
+# --- Fonction utilitaire pour parser une table HTML en DataFrame ---
+def parse_table(table_element):
+    """Parse une table HTML en DataFrame pandas."""
+    headers = [th.get_text(strip=True) for th in table_element.find_all('th')]
+    rows = []
+    for tr in table_element.find_all('tr')[1:]: # Ignorer la ligne d'en-tête si présente dans le tbody
+        cells = [td.get_text(strip=True) for td in tr.find_all('td')]
+        if cells: # S'assurer que la ligne n'est pas vide
+            rows.append(cells)
 
-# Graphique d'évolution
-st.plotly_chart(
-    px.line(indices_df, x="Indice", y="Valeur", title="Valeur des Indices"),
-    use_container_width=True
-)
+    # Créer le DataFrame
+    df = pd.DataFrame(rows, columns=headers)
 
-# Section des actions
-st.header("📊 Analyse des Actions")
-filtered_df = actions_df[
-    (actions_df["Secteur"].isin(secteur)) & 
-    (actions_df["Var. Jour"] >= variation_min) & 
-    (actions_df["Var. Jour"] <= variation_max)
-]
+    # Tenter de convertir les colonnes numériques
+    for col in ['Cours', 'Variation', 'Volume', 'Transactions', 'Capitalisation']:
+        if col in df.columns:
+            # Nettoyer les données (ex: remplacer ',' par '.', supprimer ' ', 'XOF')
+            df[col] = df[col].str.replace(' ', '').str.replace(',', '.', regex=False).str.replace('XOF', '', regex=False)
+            # Convertir en numérique, les erreurs seront NaN
+            df[col] = pd.to_numeric(df[col], errors='coerce')
 
-st.dataframe(filtered_df.sort_values("Var. Jour", ascending=False), 
-             use_container_width=True,
-             column_config={
-                 "Var. Jour": st.column_config.ProgressColumn(
-                     "Variation Jour",
-                     format="%.2f%%",
-                     min_value=-10,
-                     max_value=10,
-                 )
-             })
+    return df
 
-# Visualisations
-col1, col2 = st.columns(2)
 
-with col1:
-    st.plotly_chart(
-        px.bar(filtered_df, 
-               x="Symbole", 
-               y="Var. Jour", 
-               color="Var. Jour",
-               title="Variation Journalière par Action"),
-        use_container_width=True
-    )
+# --- Application Streamlit ---
+st.title("🚀 Données Financières BRVM - Palmarès")
+st.markdown("📈 Palmarès (Top 5 Hausses et Baisses) de la Bourse Régionale des Valeurs Mobilières (BRVM) scanné depuis [Sikafinance](https://www.sikafinance.com/marches/palmares).")
 
-with col2:
-    st.plotly_chart(
-        px.scatter(filtered_df, 
-                  x="Volume", 
-                  y="Var. Jour", 
-                  size="Capitalisation (M FCFA)",
-                  color="Secteur",
-                  hover_name="Titre",
-                  title="Volume vs Variation"),
-        use_container_width=True
-    )
+# Récupérer les données
+palmares_data = scrape_brvm_palmares(SIKAFINANCE_URL)
 
-# Section des performances extrêmes
-st.header("🎢 Performances Extrêmes")
-tab1, tab2 = st.tabs(["Plus fortes hausses", "Plus fortes baisses"])
+if palmares_data:
+    st.write(f"Dernière mise à jour des données : {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    st.warning("Les données sont mises en cache pendant 1 heure pour éviter de surcharger le site source.")
 
-with tab1:
-    top_gainers = filtered_df.nlargest(5, "Var. Jour")
-    st.dataframe(top_gainers[["Titre", "Symbole", "Var. Jour", "Var. Annuelle"]])
+    # Afficher les tables
+    for title, df in palmares_data.items():
+        st.subheader(title)
+        if not df.empty:
+            # Formatage des colonnes numériques pour une meilleure lisibilité
+            # Détecter les colonnes numériques présentes
+            numeric_cols = [col for col in ['Cours', 'Variation', 'Volume', 'Transactions', 'Capitalisation'] if col in df.columns]
+            
+            # Appliquer le formatage
+            st.dataframe(df.style.format({
+                'Cours': '{:,.2f}'.format, # 2 décimales, séparateur de milliers
+                'Variation': '{:,.2f}%'.format, # Pourcentage
+                'Volume': '{:,.0f}'.format, # Entier, séparateur de milliers
+                'Transactions': '{:,.0f}'.format, # Entier, séparateur de milliers
+                'Capitalisation': '{:,.0f}'.format # Entier, séparateur de milliers
+            }, na_rep="-"), use_container_width=True)
+        else:
+            st.info(f"Aucune donnée trouvée pour '{title}'.")
 
-with tab2:
-    top_losers = filtered_df.nsmallest(5, "Var. Jour")
-    st.dataframe(top_losers[["Titre", "Symbole", "Var. Jour", "Var. Annuelle"]])
+else:
+    st.error("Impossible de charger les données du palmarès pour le moment.")
 
-# Indicateurs techniques
-st.header("📊 Indicateurs Techniques")
-st.write("""
-- **PER moyen du marché**: 11.15
-- **Taux de rendement moyen**: 7.92%
-- **Taux de rentabilité moyen**: 9.38%
-- **Ratio de liquidité moyen**: 7.86
-""")
-
-# Pied de page
-st.divider()
-st.caption(f"Dernière mise à jour: {datetime.now(pytz.timezone('Africa/Abidjan')).strftime('%d/%m/%Y %H:%M')} | Source: BRVM")
+st.markdown("---")
+st.markdown("Créé pour répondre à une demande.")
